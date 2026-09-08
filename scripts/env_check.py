@@ -66,5 +66,7 @@ def main():
         for failure in failures:
             print(f"- {failure}")
         return 1
+    print("\nCHECK PASSED")
+    return 0
 if __name__ == "__main__":
     raise SystemExit(main())
