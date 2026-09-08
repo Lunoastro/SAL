@@ -154,4 +154,6 @@ websocket-client==1.8.0
 websockets==12.0
 werkzeug==3.1.3
 xmod==1.8.1
--i https://pypi.tuna.tsinghua.edu.cn/simple
+# As far as I can understand this was specific to their setup 
+# and not need for the reproduction
+#-i https://pypi.tuna.tsinghua.edu.cn/simple
