@@ -3,6 +3,7 @@ import platform
 import sys
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+import subprocess
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -31,15 +32,25 @@ def main():
             failures.append(f"Package missing: {package}")
 
     for module in MODULES:
-        try:
-            importlib.import_module(module)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                f"import importlib; importlib.import_module({module!r})",
+            ],
+            cwd=REPO,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
             print(f"IMPORT OK: {module}")
-        except Exception as exc:
-            failures.append(
-                f"Import failed: {module}: {type(exc).__name__}: {exc}"
-            )
-
-    torch = sys.modules.get("torch")
+        else:
+            details = result.stderr.strip() or result.stdout.strip()
+            failures.append(f"Import failed: {module}\n{details}")
+    try: 
+        torch = importlib.import_module("torch")
+    except Exception: 
+        torch = None
     if torch is not None:
         print(f"PyTorch CUDA build: {torch.version.cuda}")
         try:
