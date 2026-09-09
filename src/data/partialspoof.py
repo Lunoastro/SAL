@@ -216,9 +216,16 @@ class PartialSpoofDataset(BaseDataset):
 
 
 if __name__ == '__main__':
+    from pathlib import Path
+    from dotenv import load_dotenv
+
+    load_dotenv(
+        dotenv_path=Path(__file__).resolve().parents[2] / ".env",
+        override=False,
+    )
     print("Loading PartialSpoofDataModule...")
     data_module = PartialSpoofDataModule(
-        root='/data/import/deepfake/PartialSpoof',
+        root=os.environ["PARTIALSPOOF_ROOT"],
         sample_rate=16000,
         resolution_train=0.16,
         max_label_len=25,
