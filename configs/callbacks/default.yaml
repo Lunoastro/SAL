@@ -7,7 +7,7 @@ defaults:
 
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
-  filename: "epoch_{epoch:03d}-eer_{val/eer:.4f}"
+  filename: "epoch_{epoch:03d}-step_{step:06d}-eer_{val/eer:.4f}"
   verbose: True
   monitor: "val/eer"
   mode: "min"
