@@ -3,7 +3,7 @@
 defaults:
   - _self_
   - data: partialspoof
-  - model: large_cf_8labels_2loss
+  - model: seq/seq_cf_weighted
   - logger: tensorboard
   - trainer: gpu
   - paths: default
