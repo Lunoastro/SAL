@@ -1,5 +1,5 @@
 _target_: src.data.llama_partialspoof.LlamaPartialSpoofDataModule
-root: /data/import/deepfake/LlamaPartialSpoof
+root: ${oc.env:LLAMASPOOF_ROOT}
 part: cf
 sample_rate: 16000
 resolution_train: 0.02

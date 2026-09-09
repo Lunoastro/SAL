@@ -16,7 +16,7 @@ tags:
 clean_tag: ${join:"-", ${tags}}
 
 # passing checkpoint path is necessary for evaluation
-ckpt_path: /home/yuchen.mao/DataMixing/sdd-pl/logs/large-cf-8labels-2loss-mixup2-rawboost/run17/train/checkpoints/epoch_030-eer_2.5529.ckpt
+ckpt_path: ${oc.env:SAL_EVAL_CHECKPOINT}
 
 data:
   batch_size: 1

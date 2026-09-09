@@ -1,5 +1,6 @@
 from typing import Any, Dict, List, Tuple, Optional
-
+from pathlib import Path
+from dotenv import load_dotenv
 import hydra
 import lightning as L
 import rootutils
@@ -8,6 +9,11 @@ from lightning.pytorch.loggers import Logger
 from omegaconf import DictConfig, OmegaConf
 
 rootutils.setup_root(__file__, indicator=".project-root", pythonpath=True)
+
+load_dotenv(
+    dotenv_path=Path(__file__).resolve().parents[1] / ".env",
+    override=False,
+)
 
 from src.utils import (
     RankedLogger,
