@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - data: llama_partialspoof
+  - model: seq/seq_cf_weighted
+  - logger: tensorboard
+  - trainer: gpu
+  - paths: default
+  - extras: default
+  - hydra: default
+  - _self_
+
+task_name: eval_lps
+tags:
+  - eval_lps
+clean_tag: ${join:"-", ${tags}}
+ckpt_path: ${oc.env:SAL_EVAL_CHECKPOINT}
+# - S0: model=baseline/pool_xlsr
+# - S1: model=baseline/pool_xlsr_weighted
+# - S2-S3: model=seq/seq_cf_weighted
+# - S4: model=transition/seq_cf_2labels_2loss
+# - S5: model=spl/seq_cf_8labels_2loss
+# - S6-S8: model=sal/seq_cf_8labels_2loss
+# LPS requires 20ms (0.02) model resolution to align with LPS 20ms labels
+model:
+  net:
+    resolution_test: 0.02
+
+data:
+  batch_size: 1
+  num_workers: 4
