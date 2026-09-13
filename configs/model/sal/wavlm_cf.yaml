@@ -20,7 +20,7 @@ net:
   _target_: src.models.net.model.SSL_SeqModel_8Labels_2Loss
   ssl_encoder: large
   mode: s3prl_weighted
-  ckpt: /exp/yuchen.mao/WavLM-Large.pt
+  ckpt: ${oc.env:WAVLM_CHECKPOINT}
   hid_dim: 1024
   seq_model: cf
   resolution_train: 0.16
@@ -32,4 +32,3 @@ net:
 compile: false
 
 v2: 10
-

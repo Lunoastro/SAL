@@ -21,6 +21,7 @@ PACKAGES = (
     "omegaconf",
     "torchmetrics",
     "numpy",
+    "matplotlib",
 )
 MODULES = (
     "torch",
@@ -117,11 +118,51 @@ def check_preflight(failures):
         else:
             print(f"OK: SAL_LOG_DIR has a writable parent at {existing_path}")
 
+    had_root = os.environ.get("HAD_ROOT")
+    if had_root:
+        path = Path(had_root)
+        required_paths = (
+            path / "train",
+            path / "dev",
+            path / "segment_labels" / "train_seglab_0.02.npy",
+            path / "segment_labels" / "dev_seglab_0.02.npy",
+        )
+        missing_paths = [str(item) for item in required_paths if not item.exists()]
+        if missing_paths:
+            failures.append(
+                "HAD_ROOT is incomplete; missing: " + ", ".join(missing_paths)
+            )
+        else:
+            print(f"OK: HAD_ROOT found at {had_root}")
+
+    wavlm_checkpoint = os.environ.get("WAVLM_CHECKPOINT")
+    if wavlm_checkpoint:
+        path = Path(wavlm_checkpoint)
+        if not path.is_file():
+            failures.append(
+                f"WAVLM_CHECKPOINT file does not exist: {wavlm_checkpoint}"
+            )
+        elif path.stat().st_size == 0:
+            failures.append(
+                f"WAVLM_CHECKPOINT file is empty (0 bytes): {wavlm_checkpoint}"
+            )
+        else:
+            print(
+                "OK: WAVLM_CHECKPOINT "
+                f"({path.stat().st_size / (1024 * 1024):.1f} MB)"
+            )
+
     lps_root = os.environ.get("LLAMASPOOF_ROOT")
     if lps_root:
         path = Path(lps_root)
-        if not path.is_dir() or not (path / "segment_labels").is_dir():
-            failures.append(f"LLAMASPOOF_ROOT is incomplete: {lps_root}")
+        label_file = path / "segment_labels" / "cf_seglab_0.02.npy"
+        if not path.is_dir() or not label_file.is_file():
+            print(
+                "WARNING: LLAMASPOOF_ROOT is not ready for evaluation; "
+                f"expected {label_file}"
+            )
+        elif label_file.stat().st_size == 0:
+            print(f"WARNING: LlamaPartialSpoof label file is empty: {label_file}")
         else:
             print(f"OK: LLAMASPOOF_ROOT found at {lps_root}")
 

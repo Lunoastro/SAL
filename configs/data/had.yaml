@@ -1,5 +1,5 @@
 _target_: src.data.had.HADDataModule
-root: /gpfs/sjtu/audiocc/data/import/deepfake/datasets/HAD
+root: ${oc.env:HAD_ROOT}
 test: dev
 sample_rate: 16000
 resolution_train: 0.02

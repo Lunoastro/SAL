@@ -225,6 +225,7 @@ def process_label():
     root = os.environ["LLAMASPOOF_ROOT"]
     txts = ['label_R01TTS.0.a.txt', 'label_R01TTS.0.b.txt']
     out_dir = os.path.join(root, "segment_labels")
+    os.makedirs(out_dir, exist_ok=True)
     for txt in txts:
         txt = os.path.join(root, txt)
         with open(txt, 'r') as f:
@@ -251,7 +252,8 @@ def process_label():
                 allow_pickle=True)
 
     # select different parts: cf, cp, oa
-    for npy in os.listdir(out_dir):
+    for res in resolutions:
+        npy = f'seglab_{res}.npy'
         file = os.path.join(out_dir, npy)
         labels = np.load(file, allow_pickle=True).item()
         labels_part = {'real': dict(), 'full': dict(),

@@ -1,9 +1,10 @@
-#!/usr/bin/env bash
+#!/usr/bin/bash -l
 #SBATCH --job-name=sal-train
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --gpus=1
+#SBATCH --gpus=A100:1
+#SBATCH --constraint=GPUMEM80GB
 #SBATCH --mem=32G
 #SBATCH --time=23:50:00
 #SBATCH --output=slurm-%j.out
@@ -11,8 +12,6 @@
 
 set -euo pipefail
 
-# Submit this script from the repository root. Slurm may execute a spooled copy, (<-- Need to find that out somehow)
-# so the script's own location is not a reliable way to find the checkout.
 REPO_ROOT="${SLURM_SUBMIT_DIR:-}"
 if [[ -z "${REPO_ROOT}" || ! -f "${REPO_ROOT}/src/train.py" ]]; then
     echo "ERROR: submit from the SAL repository root: sbatch cluster/train.sbatch ..."
@@ -31,24 +30,55 @@ if [[ ! -f ".env" ]]; then
     exit 1
 fi
 
-if ! command -v conda &>/dev/null; then
-    echo "ERROR: conda is unavailable. Load it before submitting this job."
+module load apptainer
+
+if ! command -v apptainer &>/dev/null; then
+    echo "ERROR: Apptainer is unavailable after loading its cluster module."
     exit 1
 fi
-eval "$(conda shell.bash hook)"
-conda activate sal
 
-# Run preflight environment check with GPU
-echo "Running GPU environment check..."
-python -u scripts/env_check.py --mode preflight
+SAL_IMAGE="${SAL_IMAGE:-${REPO_ROOT}/cluster/sal.sif}"
+if [[ ! -r "${SAL_IMAGE}" ]]; then
+    echo "ERROR: SAL container image not found: ${SAL_IMAGE}"
+    echo "Build cluster/sal.def into cluster/sal.sif before submitting this job."
+    exit 1
+fi
 
-# Launch training with passed CLI arguments (should default to experiment=S0 if not specified)
+run_in_sal() {
+    srun apptainer exec \
+        --nv \
+        --cleanenv \
+        --pwd "${REPO_ROOT}" \
+        --env "PROJECT_ROOT=${PROJECT_ROOT}" \
+        "${SAL_IMAGE}" \
+        python -u "$@"
+}
+
+# Parse the script-only flag before forwarding the remaining arguments to Hydra.
+PREFLIGHT_ONLY=false
+if [[ "${1:-}" == "--preflight-only" ]]; then
+    PREFLIGHT_ONLY=true
+    shift
+fi
+
 ARGS=("$@")
 if [[ ${#ARGS[@]} -eq 0 ]]; then
     ARGS=("experiment=S0")
 fi
 
+# Run preflight environment check with GPU
+echo "Running GPU environment check..."
+run_in_sal scripts/env_check.py --mode preflight
+
+echo "Checking Hydra configuration: ${ARGS[*]}"
+run_in_sal src/train.py "${ARGS[@]}" --cfg job --resolve >/dev/null
+
+if [[ "${PREFLIGHT_ONLY}" == true ]]; then
+    echo "=== SAL Preflight Completed at $(date) ==="
+    exit 0
+fi
+
 echo "Launching training with arguments: ${ARGS[*]}"
-python -u src/train.py "${ARGS[@]}"
+run_in_sal src/train.py "${ARGS[@]}"
 
 echo "=== SAL Training Job Completed at $(date) ==="

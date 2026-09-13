@@ -265,12 +265,12 @@ def process_label():
     HAD_dev_fake_00000003 0.00-1.26-T/1.26-2.12-F/2.12-3.04-T 0
     """
     resolutions = [0.02, 0.04, 0.08, 0.16, 0.32, 0.64]
-    root = '/gpfs/sjtu/audiocc/data/import/deepfake/datasets/HAD/'
+    root = os.environ["HAD_ROOT"]
     parts = ['train', 'dev', 'test']
-    out_dir = root + 'segment_labels'
+    out_dir = os.path.join(root, 'segment_labels')
     os.makedirs(out_dir, exist_ok=True)
     for part in parts:
-        txt = root + f'label/HAD_{part}_label.txt'
+        txt = os.path.join(root, 'label', f'HAD_{part}_label.txt')
         labels = [dict() for _ in resolutions]
         with open(txt, 'r') as f:
             for line in f:
@@ -297,10 +297,17 @@ def process_label():
 
 
 if __name__ == '__main__':
+    from pathlib import Path
+    from dotenv import load_dotenv
+
+    load_dotenv(
+        dotenv_path=Path(__file__).resolve().parents[2] / ".env",
+        override=False,
+    )
     # process_label()
     print("Loading HADDataModule...")
     data_module = HADDataModule(
-        root='/gpfs/sjtu/audiocc/data/import/deepfake/datasets/HAD',
+        root=os.environ["HAD_ROOT"],
         test='dev',
         sample_rate=16000,
         resolution_train=0.02,

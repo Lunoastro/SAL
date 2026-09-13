@@ -1,6 +1,6 @@
 _target_: src.data.combined_dataset.CombinedDataModule
-partialspoof_root: /data/import/deepfake/PartialSpoof
-had_root: /gpfs/sjtu/audiocc/data/import/deepfake/datasets/HAD
+partialspoof_root: ${oc.env:PARTIALSPOOF_ROOT}
+had_root: ${oc.env:HAD_ROOT}
 sample_rate: 16000
 
 # PartialSpoof settings
