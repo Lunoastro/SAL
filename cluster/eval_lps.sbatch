@@ -72,5 +72,6 @@ srun apptainer exec \
     python -u src/eval.py --config-name eval_lps \
     "model=$model" \
     "data.part=$part" \
+    "data.num_workers=0" \
     "hydra.run.dir=$output_dir" \
     "+trainer.enable_progress_bar=false"
