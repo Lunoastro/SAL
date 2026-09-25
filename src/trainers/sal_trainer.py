@@ -24,6 +24,7 @@ class SALTrainer(LightningModule):
             mixup: bool = False,
             mixup2: bool = False,
             mixup_ratio: float = 0.5,
+            csm_fix: bool = False,
             compile: bool = False,
             vis: bool = False,
             vis_top_k_hard: int = 10,
@@ -45,6 +46,7 @@ class SALTrainer(LightningModule):
         self.mixup = mixup
         self.mixup2 = mixup2
         self.mixup_ratio = mixup_ratio
+        self.csm_fix = csm_fix
         self.vis = vis
         self.vis_top_k_hard = vis_top_k_hard
         self.vis_top_k_easy = vis_top_k_easy
@@ -79,6 +81,8 @@ class SALTrainer(LightningModule):
         :param batch: A batch of data containing (utt_ids, inputs, labels, label_lengths)
         :return: The batch with mixup applied to selected samples
         """
+        if self.csm_fix:
+            return self._csm_batch(batch)
         utt_ids, inputs, labels, label_lengths = batch
         batch_size = inputs.size(0)
         
@@ -209,6 +213,33 @@ class SALTrainer(LightningModule):
             final_label_lengths[original_indices] = label_lengths[original_indices]
         
         return utt_ids, final_inputs, final_labels, final_label_lengths
+
+    def _csm_batch(
+            self,
+            batch: Tuple[list, torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> Tuple[list, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Upstream `_mixup_batch` splices each selected sample with itself
+        and cuts audio and labels at independent points. Here each selected
+        sample A is spliced with a different sample B at one shared cut k,
+        drawn from Uniform{1..T-1} on the label grid (T = shorter valid length).
+        """
+        utt_ids, inputs, labels, label_lengths = batch
+        idx = torch.randperm(inputs.size(0))[:int(inputs.size(0) * self.mixup_ratio)]
+        if len(idx) < 2:
+            return batch
+        scale = inputs.size(1) // labels.size(1)  # samples per label frame
+        valid = label_lengths.clamp(max=labels.size(1))
+        new_inputs, new_labels, new_lengths = inputs.clone(), labels.clone(), label_lengths.clone()
+        for a, b in zip(idx.tolist(), idx.roll(1).tolist()):  # roll(1) of distinct indices: b != a
+            t = int(min(valid[a], valid[b]))
+            if t < 2:
+                continue
+            k = int(torch.randint(1, t, (1,)))
+            new_inputs[a, k * scale:] = inputs[b, k * scale:]
+            new_labels[a, k:] = labels[b, k:]
+            new_lengths[a] = valid[b]
+        return utt_ids, new_inputs, new_labels, new_lengths
 
     def _get_label_mask(
             self,
