@@ -16,6 +16,19 @@ class SPLLabelGenerator:
     """
     
     @staticmethod
+    def positional_labels(labels: torch.Tensor) -> torch.Tensor:
+        """Return 8-class SPL targets on-device, including historical padding."""
+        labels = labels.detach().long()
+        starts = torch.ones_like(labels, dtype=torch.bool)
+        ends = torch.ones_like(labels, dtype=torch.bool)
+        starts[..., 1:] = labels[..., 1:] != labels[..., :-1]
+        ends[..., :-1] = starts[..., 1:]
+        # start=0, middle=1, end=2, singleton=3, plus 4 for true segments.
+        positions = torch.where(starts, torch.where(ends, 3, 0),
+                                torch.where(ends, 2, 1))
+        return (labels == 1).long() * 4 + positions
+
+    @staticmethod
     def _seg2bd_label_new(seglabel):
         """
         Transfer binary label to 'T'/'F' and during lengths.

@@ -69,52 +69,34 @@ class EERMetric(Metric):
 
 
 class F1Metric(Metric):
+    """Binary accuracy and F1 with constant-size, distributed-summable state."""
+
     def __init__(self, percent=True):
-        super().__init__(
-            # compute_on_cpu=False,
-            # sync_on_compute=False,
-            # dist_sync_on_step=True
-        )
-        self.add_state("y_pred", default=[], dist_reduce_fx="cat")
-        self.add_state("y_true", default=[], dist_reduce_fx="cat")
+        super().__init__()
+        for name in ("correct", "total", "tp", "fp", "fn"):
+            self.add_state(name, default=torch.tensor(0, dtype=torch.long),
+                           dist_reduce_fx="sum")
         self.percent = percent
 
     def update(self, preds: torch.Tensor, targets: torch.Tensor):
-        """Update state with predictions and targets."""
-        self.y_pred.append(preds.detach())
-        self.y_true.append(targets.detach())
+        y_pred = preds.detach().argmax(dim=1)
+        y_true = targets.detach()
+        self.correct += (y_pred == y_true).sum()
+        self.total += y_true.numel()
+        self.tp += ((y_pred == 1) & (y_true == 1)).sum()
+        self.fp += ((y_pred == 1) & (y_true == 0)).sum()
+        self.fn += ((y_pred == 0) & (y_true == 1)).sum()
 
     def compute(self):
-        """Compute the ACC and F1 score using PyTorch."""
-        if not isinstance(self.y_pred, list):
-            self.y_pred = [self.y_pred]
-        if not isinstance(self.y_true, list):
-            self.y_true = [self.y_true]
-
-        y_pred = torch.cat(self.y_pred)
-        y_true = torch.cat(self.y_true)
-        y_pred = y_pred.argmax(dim=1)  # Convert logits to class labels
-
-        # Calculate accuracy
-        correct = (y_pred == y_true).sum().float()
-        total = y_true.size(0)
-        acc = correct / total if total > 0 else 0.0
-
-        # Calculate F1 score
-        tp = (y_pred * y_true).sum().float()
-        fp = (y_pred * (1 - y_true)).sum().float()
-        fn = ((1 - y_pred) * y_true).sum().float()
-
-        precision = tp / (tp + fp) if tp + fp > 0 else 0.0
-        recall = tp / (tp + fn) if tp + fn > 0 else 0.0
-
-        f1 = 2 * (precision * recall) / (
-                    precision + recall) if precision + recall > 0 else 0.0
-
+        acc = self.correct.float() / self.total.float().clamp_min(1)
+        tp, fp, fn = self.tp.float(), self.fp.float(), self.fn.float()
+        precision = tp / (tp + fp).clamp_min(1)
+        recall = tp / (tp + fn).clamp_min(1)
+        f1 = torch.where(precision + recall > 0,
+                         2 * (precision * recall) / (precision + recall), 0.0)
         if self.percent:
             acc *= 100
             f1 *= 100
-
         return acc, f1
 
 

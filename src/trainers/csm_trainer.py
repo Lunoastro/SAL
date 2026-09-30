@@ -222,10 +222,8 @@ class CSMTrainer(LightningModule):
         :return: A mask tensor where 1 indicates valid positions and 0 indicates
             padded positions.
         """
-        mask = torch.ones_like(labels, dtype=torch.bool)
-        for i, length in enumerate(label_lengths):
-            mask[i, length:] = False
-        return mask
+        positions = torch.arange(labels.shape[1], device=labels.device)
+        return positions < label_lengths.to(labels.device)[:, None]
 
     def _get_pred_label(
             self,
@@ -241,15 +239,8 @@ class CSMTrainer(LightningModule):
         :return: A tuple containing a list of predicted labels and a list of
             ground truth labels.
         """
-        pred_list = []
-        label_list = []
-        for i, length in enumerate(label_lengths):
-            pred_list.append(preds[i, :length])
-            label_list.append(labels[i, :length])
-
-        preds_flat = torch.cat(pred_list, dim=0)
-        labels_flat = torch.cat(label_list, dim=0).float()
-        return preds_flat, labels_flat
+        mask = self._get_label_mask(labels, label_lengths)
+        return preds[mask], labels[mask].float()
 
     @property
     def exp_dir(self) -> str:
@@ -301,20 +292,7 @@ class CSMTrainer(LightningModule):
         mask = self._get_label_mask(labels, label_lengths)
         
         # Generate boundary labels for batch
-        labels_info, lengths_info = SPLLabelGenerator._seg2bd_label_new(labels)
-        target_batch = SPLLabelGenerator.seg2bd_label_new(labels_info, lengths_info)
-        
-        # Convert batch targets to tensor format
-        if isinstance(target_batch, list):
-            # Handle batch data
-            target_list = []
-            for i, target_seq in enumerate(target_batch):
-                target_tensor = torch.tensor(target_seq, device=preds1.device).squeeze()
-                target_list.append(target_tensor)
-            target = torch.cat(target_list, dim=0).type(torch.long)
-        else:
-            # Handle single sequence
-            target = torch.tensor(target_batch, device=preds1.device).view(-1).type(torch.long)
+        target = SPLLabelGenerator.positional_labels(labels).reshape(-1)
         
         loss1 = self.criterion(preds1.transpose(1, 2),
                              target.reshape(labels.shape[0], -1).to(torch.long), mask=mask)
@@ -352,20 +330,7 @@ class CSMTrainer(LightningModule):
         mask = self._get_label_mask(labels, label_lengths)
         
         # Generate boundary labels for batch
-        labels_info, lengths_info = SPLLabelGenerator._seg2bd_label_new(labels)
-        target_batch = SPLLabelGenerator.seg2bd_label_new(labels_info, lengths_info)
-        
-        # Convert batch targets to tensor format
-        if isinstance(target_batch, list):
-            # Handle batch data
-            target_list = []
-            for i, target_seq in enumerate(target_batch):
-                target_tensor = torch.tensor(target_seq, device=preds1.device).squeeze()
-                target_list.append(target_tensor)
-            target = torch.cat(target_list, dim=0).type(torch.long)
-        else:
-            # Handle single sequence
-            target = torch.tensor(target_batch, device=preds1.device).view(-1).type(torch.long)
+        target = SPLLabelGenerator.positional_labels(labels).reshape(-1)
         loss1 = self.criterion(preds1.transpose(1, 2),
                               target.reshape(labels.shape[0], -1).to(torch.long), mask=mask)
         loss2 = self.criterion2(preds2,
@@ -418,20 +383,7 @@ class CSMTrainer(LightningModule):
         mask = self._get_label_mask(labels, label_lengths)
         
         # Generate boundary labels for batch
-        labels_info, lengths_info = SPLLabelGenerator._seg2bd_label_new(labels)
-        target_batch = SPLLabelGenerator.seg2bd_label_new(labels_info, lengths_info)
-        
-        # Convert batch targets to tensor format
-        if isinstance(target_batch, list):
-            # Handle batch data
-            target_list = []
-            for i, target_seq in enumerate(target_batch):
-                target_tensor = torch.tensor(target_seq, device=preds1.device).squeeze()
-                target_list.append(target_tensor)
-            target = torch.cat(target_list, dim=0).type(torch.long)
-        else:
-            # Handle single sequence
-            target = torch.tensor(target_batch, device=preds1.device).view(-1).type(torch.long)
+        target = SPLLabelGenerator.positional_labels(labels).reshape(-1)
         
         loss1 = self.criterion(preds1.transpose(1, 2),
                               target.reshape(labels.shape[0], -1).to(torch.long), mask=mask)
@@ -440,8 +392,6 @@ class CSMTrainer(LightningModule):
         loss = loss2
         # update and log metrics
         preds_flat, labels_flat = self._get_pred_label(preds2, labels,
-                                                       label_lengths)
-        preds_flat8, labels_flat8 = self._get_pred_label(preds1, target.reshape(labels.shape[0], -1),
                                                        label_lengths)
         self.test_loss(loss)
         

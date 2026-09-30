@@ -126,9 +126,12 @@ class BaseSSLModel(nn.Module):
         out = self.ssl_encoder.extract_feat(x)
         
         if hasattr(self, "weight_layer"):
-            out = torch.stack(out, dim=0)
-            out = out * self.weight_layer.view(25, 1, 1, 1)
-            out = out.sum(dim=0)
+            if len(out) != self.weight_layer.numel():
+                raise ValueError("SSL layer count does not match layer weights")
+            weighted = out[0] * self.weight_layer[:1].view(1, 1, 1)
+            for i in range(1, len(out)):
+                weighted = weighted + out[i] * self.weight_layer[i:i + 1].view(1, 1, 1)
+            out = weighted
         
         return out
 
