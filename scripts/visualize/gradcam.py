@@ -168,8 +168,10 @@ def compute_temporal_gradcam(activations: torch.Tensor,
 
 def load_checkpoint_if_exists(model: torch.nn.Module, ckpt_path: Optional[str],
                               device: torch.device) -> None:
-    if ckpt_path is None or not os.path.isfile(ckpt_path):
+    if ckpt_path is None:
         return
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(ckpt_path)
     ckpt_obj = torch.load(ckpt_path, map_location=device)
     if isinstance(ckpt_obj, dict) and "state_dict" in ckpt_obj:
         state_dict = ckpt_obj["state_dict"]
@@ -190,7 +192,7 @@ def load_checkpoint_if_exists(model: torch.nn.Module, ckpt_path: Optional[str],
         nk = strip_prefixes(k)
         if nk in target_keys:
             cleaned_and_filtered[nk] = v
-    model.load_state_dict(cleaned_and_filtered, strict=False)
+    model.load_state_dict(cleaned_and_filtered, strict=True)
 
 
 def resample_to_target(arr: np.ndarray, T: int) -> np.ndarray:
@@ -293,20 +295,16 @@ def main():
     # Prepare visualization data
     target_T = len(cam)
     y_np = np.array(y, dtype=float)
-    if len(y_np) != target_T:
-        y_np = np.array([y_np[np.clip(int(round(t)), 0, len(y_np) - 1)] 
-                        for t in np.linspace(0, len(y_np) - 1, num=target_T)],
-                       dtype=float)
-    
-    # Get prediction probabilities
-    probs_np = probs[0, :, 1].detach().cpu().numpy()  # Probability of class 1 (real)
-    
-    # Resample probabilities to match CAM length if needed
-    if len(probs_np) != target_T:
-        probs_np = resample_to_target(probs_np, target_T)
-    
-    # Time axis in seconds
-    times = np.arange(target_T) * args.resolution
+    # The hook is before pooling (20 ms); repeat each pooled bin exactly.
+    scale = model.pool_head.scale_test
+    probs_np = probs[0, :, 1].detach().cpu().numpy()
+    if len(y_np) != len(probs_np) or not 0 <= target_T - len(y_np) * scale < scale:
+        raise ValueError("Labels, predictions, and encoder frames do not align")
+    y_np = np.repeat(y_np, scale)
+    probs_np = np.repeat(probs_np, scale)
+    cam = cam[:len(y_np)]
+    target_T = len(cam)
+    times = np.arange(target_T) * (args.resolution / scale)
 
     # Create visualization
     import matplotlib
@@ -379,6 +377,7 @@ def main():
     target_ticks = np.arange(0, max_time + 0.5, 0.5)
     tick_times = [times[np.argmin(np.abs(times - t))] for t in target_ticks]
     tick_labels = [f"{t:.0f}" if t % 1 == 0 else f"{t:.1f}" for t in tick_times]
+    ax_bot.set_xticks(tick_times)
     ax_bot.set_xticklabels(tick_labels, fontsize=10)
     ax_bot.set_xlim(times[0], times[-1])
     

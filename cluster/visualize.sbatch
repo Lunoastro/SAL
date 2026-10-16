@@ -7,8 +7,8 @@
 #SBATCH --constraint=GPUMEM80GB
 #SBATCH --mem=32G
 #SBATCH --time=01:00:00
-#SBATCH --output=eval/visualize/slurm-%j.out
-#SBATCH --error=eval/visualize/slurm-%j.err
+#SBATCH --output=slurm-visualize-%j.out
+#SBATCH --error=slurm-visualize-%j.err
 
 set -euo pipefail
 
@@ -26,11 +26,12 @@ if [[ ! -f ".env" ]]; then
     exit 1
 fi
 
-# Load environment variables without overriding exported ones
+# Load the remote environment configuration
 set -a
 # shellcheck disable=SC1091
 source .env
 set +a
+export PROJECT_ROOT="${REPO_ROOT}"
 
 # Load Apptainer module
 module load apptainer
@@ -51,16 +52,15 @@ mkdir -p "${OUT_DIR}"
 
 # Determine mode and sample ID from arguments
 # Usage: sbatch cluster/visualize.sbatch [gradcam|part_error|all] [SAMPLE_ID]
-MODE="${1:-all}"
-SAMPLE_ID="${2:-}"
+MODE="${1:-gradcam}"
+SAMPLE_ID="${2:-CON_E_0000096}"
+case "$MODE" in gradcam|part_error|all) ;; *) echo "ERROR: Invalid mode: $MODE" >&2; exit 1;; esac
 
-# Paths for S7_fixed checkpoint
-CKPT_DIR="${SAL_LOG_DIR}/S7_fixed/run1/train/checkpoints"
-MODEL_CKPT="${CKPT_DIR}/epoch_022-step_018262-eer_0.9787.ckpt"
-if [[ ! -f "${MODEL_CKPT}" ]]; then
-    # Fallback to historical S7 run4 if S7_fixed is not found
-    echo "Notice: S7_fixed checkpoint not found at ${MODEL_CKPT}. Checking historical S7..."
-    MODEL_CKPT="${SAL_LOG_DIR}/S7/run4/train/checkpoints/epoch_012-step_010322-eer_2.4693.ckpt"
+# Historical S7 (<-- default )
+MODEL_CKPT="${MODEL_CKPT:-${SAL_LOG_DIR}/S7/run4/train/checkpoints/epoch_012-step_010322-eer_2.4693.ckpt}"
+if [[ "$MODE" != part_error && ! -r "$MODEL_CKPT" ]]; then
+    echo "ERROR: Model checkpoint not readable: $MODEL_CKPT" >&2
+    exit 1
 fi
 
 echo "============================================================"
@@ -85,11 +85,7 @@ run_in_sal() {
 if [[ "${MODE}" == "part_error" || "${MODE}" == "all" ]]; then
     echo ""
     echo "--- Step 1a: Generating Positional Error Rate Plot (part_error.py) ---"
-    RESULT_FILE="${SAL_LOG_DIR}/S7/run4/train/result.txt"
-    if [[ ! -f "${RESULT_FILE}" ]]; then
-        # Try finding result.txt in S5 or S7_fixed
-        RESULT_FILE="$(find "${SAL_LOG_DIR}" -name "result.txt" | head -n 1 || true)"
-    fi
+    : "${RESULT_FILE:?Set RESULT_FILE to verified positional statistics (indices 0..7), not S7 aggregate metrics}"
 
     if [[ -n "${RESULT_FILE}" && -f "${RESULT_FILE}" ]]; then
         echo "Found training result file: ${RESULT_FILE}"
@@ -98,7 +94,8 @@ if [[ "${MODE}" == "part_error" || "${MODE}" == "all" ]]; then
             --out "${OUT_DIR}/positional_error_rates.png"
         echo "Positional error plot saved to ${OUT_DIR}/positional_error_rates.png"
     else
-        echo "Warning: result.txt not found in ${SAL_LOG_DIR}. Skipping part_error plot."
+        echo "ERROR: Result file not found: $RESULT_FILE" >&2
+        exit 1
     fi
 fi
 
@@ -109,29 +106,14 @@ if [[ "${MODE}" == "gradcam" || "${MODE}" == "all" ]]; then
     echo ""
     echo "--- Step 1b / 2: Generating Grad-CAM and Prediction Timeline (gradcam.py) ---"
     
-    LABELS_PATH="${PARTIALSPOOF_ROOT}/segment_labels/eval_seglab_0.16.npy"
-    if [[ ! -f "${LABELS_PATH}" ]]; then
-        # Fallback to dev split if eval labels are elsewhere
-        LABELS_PATH="${PARTIALSPOOF_ROOT}/segment_labels/dev_seglab_0.16.npy"
-    fi
-
-    # If no sample ID is provided, query the first sample from labels dict
-    if [[ -z "${SAMPLE_ID}" ]]; then
-        echo "No SAMPLE_ID provided. Auto-selecting first sample from ${LABELS_PATH}..."
-        SAMPLE_ID=$(run_in_sal -c "import numpy as np; labels = np.load('${LABELS_PATH}', allow_pickle=True).item(); print(list(labels.keys())[0])")
-        echo "Selected SAMPLE_ID: ${SAMPLE_ID}"
-    fi
-
-    # Find audio path for the sample
-    AUDIO_PATH="${PARTIALSPOOF_ROOT}/eval/${SAMPLE_ID}.wav"
-    if [[ ! -f "${AUDIO_PATH}" ]]; then
-        AUDIO_PATH="${PARTIALSPOOF_ROOT}/dev/${SAMPLE_ID}.wav"
-    fi
-
-    if [[ ! -f "${AUDIO_PATH}" ]]; then
-        echo "ERROR: Audio file not found for sample ${SAMPLE_ID} in eval or dev directory." >&2
-        exit 1
-    fi
+    # Keep audio and labels on the same split and never substitute another split.
+    SPLIT="${SPLIT:-eval}"
+    case "$SPLIT" in eval|dev) ;; *) echo "ERROR: Invalid split: $SPLIT" >&2; exit 1;; esac
+    LABELS_PATH="${PARTIALSPOOF_ROOT}/segment_labels/${SPLIT}_seglab_0.16.npy"
+    AUDIO_PATH="${PARTIALSPOOF_ROOT}/${SPLIT}/${SAMPLE_ID}.wav"
+    for file in "$LABELS_PATH" "$AUDIO_PATH" "$XLSR_CHECKPOINT"; do
+        [[ -r "$file" ]] || { echo "ERROR: File not readable: $file" >&2; exit 1; }
+    done
 
     echo "Audio: ${AUDIO_PATH}"
     echo "Labels: ${LABELS_PATH}"
