@@ -110,7 +110,7 @@ if [[ "${MODE}" == "gradcam" || "${MODE}" == "all" ]]; then
     SPLIT="${SPLIT:-eval}"
     case "$SPLIT" in eval|dev) ;; *) echo "ERROR: Invalid split: $SPLIT" >&2; exit 1;; esac
     LABELS_PATH="${PARTIALSPOOF_ROOT}/segment_labels/${SPLIT}_seglab_0.16.npy"
-    AUDIO_PATH="${PARTIALSPOOF_ROOT}/${SPLIT}/${SAMPLE_ID}.wav"
+    AUDIO_PATH="${PARTIALSPOOF_ROOT}/${SPLIT}/con_wav/${SAMPLE_ID}.wav"
     for file in "$LABELS_PATH" "$AUDIO_PATH" "$XLSR_CHECKPOINT"; do
         [[ -r "$file" ]] || { echo "ERROR: File not readable: $file" >&2; exit 1; }
     done
