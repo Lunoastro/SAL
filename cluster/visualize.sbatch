@@ -51,10 +51,10 @@ OUT_DIR="${REPO_ROOT}/eval/visualize"
 mkdir -p "${OUT_DIR}"
 
 # Determine mode and sample ID from arguments
-# Usage: sbatch cluster/visualize.sbatch [gradcam|part_error|all] [SAMPLE_ID]
+# Usage: sbatch cluster/visualize.sbatch [gradcam|part_error|all|figure1|figure3] [SAMPLE_ID]
 MODE="${1:-gradcam}"
 SAMPLE_ID="${2:-CON_E_0000096}"
-case "$MODE" in gradcam|part_error|all) ;; *) echo "ERROR: Invalid mode: $MODE" >&2; exit 1;; esac
+case "$MODE" in gradcam|part_error|all|figure1|figure3) ;; *) echo "ERROR: Invalid mode: $MODE" >&2; exit 1;; esac
 
 # Historical S7 (<-- default )
 MODEL_CKPT="${MODEL_CKPT:-${SAL_LOG_DIR}/S7/run4/train/checkpoints/epoch_012-step_010322-eer_2.4693.ckpt}"
@@ -75,9 +75,53 @@ run_in_sal() {
         --cleanenv \
         --pwd "${REPO_ROOT}" \
         --env "PROJECT_ROOT=${PROJECT_ROOT}" \
+        --env "MPLBACKEND=Agg" \
         "${SAL_IMAGE}" \
         python -u "$@"
 }
+
+if [[ "$MODE" == figure1 || "$MODE" == figure3 ]]; then
+    OUT_DIR="$OUT_DIR/${SLURM_JOB_ID}"
+    mkdir -p "$OUT_DIR"
+    git rev-parse HEAD > "$OUT_DIR/commit.txt"
+    for model in S3 S7; do
+        if [[ "$model" == S3 ]]; then
+            checkpoint="$SAL_LOG_DIR/S3/run1/train/checkpoints/epoch_010-step_008734-eer_2.6435.ckpt"
+            model_type=ssl_seq
+            model_config=seq/seq_cf_weighted
+        else
+            checkpoint="$SAL_LOG_DIR/S7/run4/train/checkpoints/epoch_012-step_010322-eer_2.4693.ckpt"
+            model_type=ssl_seq_8labels_2loss
+            model_config=sal/seq_cf_8labels_2loss
+        fi
+        [[ -r "$checkpoint" ]] || { echo "ERROR: Missing $checkpoint" >&2; exit 1; }
+        printf '%s %s\n' "$model" "$checkpoint" >> "$OUT_DIR/protocol.txt"
+        if [[ "$MODE" == figure1 ]]; then
+            run_in_sal scripts/visualize/gradcam.py \
+                --audio_path "$PARTIALSPOOF_ROOT/eval/con_wav/$SAMPLE_ID.wav" \
+                --labels_path "$PARTIALSPOOF_ROOT/segment_labels/eval_seglab_0.16.npy" \
+                --sample_id "$SAMPLE_ID" --ckpt "$XLSR_CHECKPOINT" \
+                --model_ckpt "$checkpoint" --model_type "$model_type" \
+                --ssl_mode s3prl_weighted --device cuda \
+                --output_path "$OUT_DIR/figure1_${model}_${SAMPLE_ID}.png"
+        else
+            # write next to the supplied checkpoint path
+            mkdir -p "$OUT_DIR/$model/checkpoints"
+            ln -s "$checkpoint" "$OUT_DIR/$model/checkpoints/model.ckpt"
+            run_in_sal src/eval.py "model=$model_config" data=partialspoof \
+                data.batch_size=1 data.num_workers=0 \
+                "ckpt_path=$OUT_DIR/$model/checkpoints/model.ckpt" \
+                "hydra.run.dir=$OUT_DIR/$model/hydra" +trainer.enable_progress_bar=false
+        fi
+    done
+    if [[ "$MODE" == figure3 ]]; then
+        run_in_sal scripts/visualize/part_error.py \
+            --file "$OUT_DIR/S3/result.txt" --compare "$OUT_DIR/S7/result.txt" \
+            --out "$OUT_DIR/figure3_distribution_errors.png"
+    fi
+    echo "Saved $MODE outputs to $OUT_DIR"
+    exit 0
+fi
 
 # ---------------------------------------------------------
 # Step 1a: Positional Error Rates (Start, Middle, End, Unit)

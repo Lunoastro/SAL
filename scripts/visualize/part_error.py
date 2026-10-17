@@ -94,6 +94,29 @@ def plot_error_rates(
     plt.close(fig)
 
 
+def plot_comparison(first, second, output_path):
+    """Attempt to recreate the comparison plot from the original SAL paper."""
+    totals = [first[i][1] + first[i + 4][1] for i in range(4)]
+    if any(first[i][1] != second[i][1] for i in range(8)) or sum(totals) == 0:
+        raise ValueError("Comparison requires matching, nonempty positional counts")
+    names = ["Start", "Middle", "End", "Unit"]
+    fig, (distribution, errors) = plt.subplots(1, 2, figsize=(11, 4))
+    distribution.pie(totals, labels=names, autopct="%1.1f%%")
+    distribution.set_title("Distribution of 160 ms frame positions")
+    for offset, data, name in [(-0.18, first, "FLD (S3)"), (0.18, second, "SAL (S7)")]:
+        rates = compute_pair_error_rates(data)
+        rates = [rate if total else float("nan") for rate, total in zip(rates, totals)]
+        errors.bar([i + offset for i in range(4)], rates, width=0.36, label=name)
+    errors.set_xticks(range(4))
+    errors.set_xticklabels(names)
+    errors.set_ylabel("Binary classification error rate")
+    errors.legend()
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot pair error rates from a result file.",
@@ -121,9 +144,13 @@ Example:
         default="",
         help="Plot title (leave empty for no title)",
     )
+    parser.add_argument("--compare", help="S7 statistics to compare with --file")
     args = parser.parse_args()
 
     data = parse_result_file(args.file)
+    if args.compare:
+        plot_comparison(data, parse_result_file(args.compare), args.out)
+        return
     rates = compute_pair_error_rates(data)
 
     labels = ["Start", "Middle", "End", "Unit"]
