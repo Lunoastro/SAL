@@ -273,6 +273,13 @@ def plot_localisation(audio, probabilities, labels, resolution, threshold, outpu
                                Patch(color="#edf4ed", label="Correct"),
                                Patch(color="#eeeeee", label="No annotation")],
                        loc="upper right", fontsize=8, ncol=4)
+        for boundary in edges[np.flatnonzero(np.diff(labels)) + 1]:
+            for ax in axes:
+                ax.axvline(boundary, color="gray", linestyle="--", linewidth=1, alpha=0.8)
+        fa, ms = int((errors == 1).sum()), int((errors == 2).sum())
+        summary = ("No misclassified annotated frames" if fa + ms == 0 else
+                   f"{fa + ms}/{len(labels)} misclassified (FA: {fa}, missed: {ms})")
+        axes[0].set_title(f"SAL localisation — {sample_id} | {summary} (threshold {threshold:g}, {resolution * 1000:g} ms)")
     axes[-1].set(xlabel="Time (s)", xlim=(0, edges[-1]))
     fig.tight_layout()
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
