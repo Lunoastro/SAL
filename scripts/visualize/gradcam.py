@@ -68,7 +68,7 @@ def parse_args():
         description="Grad-CAM visualization for SSL_SeqModel")
     parser.add_argument("--audio_path", type=str, required=True,
                         help="Path to audio file (.wav)")
-    parser.add_argument("--labels_path", type=str, required=True,
+    parser.add_argument("--labels_path", type=str,
                         help="Path to segment labels (.npy file)")
     parser.add_argument("--sample_id", type=str, required=True,
                         help="Sample ID to load from labels")
@@ -104,7 +104,17 @@ def parse_args():
                         help="Output path for visualization")
     parser.add_argument("--show", action="store_true",
                         help="Show plot interactively")
+    parser.add_argument("--localisation", action="store_true",
+                        help="Plot waveform, predictions and optional ground-truth errors; no Grad-CAM")
+    parser.add_argument("--threshold", type=float, default=0.5,
+                        help="P(real) threshold for localisation; default matches binary argmax")
     args = parser.parse_args()
+    if not 0 < args.threshold < 1:
+        parser.error("threshold must lie strictly between 0 and 1")
+    if not args.localisation and not args.labels_path:
+        parser.error("Grad-CAM reproduction requires --labels_path")
+    if args.localisation and not args.model_ckpt:
+        parser.error("Localisation requires a trained --model_ckpt")
     return args
 
 
@@ -168,8 +178,10 @@ def compute_temporal_gradcam(activations: torch.Tensor,
 
 def load_checkpoint_if_exists(model: torch.nn.Module, ckpt_path: Optional[str],
                               device: torch.device) -> None:
-    if ckpt_path is None or not os.path.isfile(ckpt_path):
+    if ckpt_path is None:
         return
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(ckpt_path)
     ckpt_obj = torch.load(ckpt_path, map_location=device)
     if isinstance(ckpt_obj, dict) and "state_dict" in ckpt_obj:
         state_dict = ckpt_obj["state_dict"]
@@ -190,7 +202,7 @@ def load_checkpoint_if_exists(model: torch.nn.Module, ckpt_path: Optional[str],
         nk = strip_prefixes(k)
         if nk in target_keys:
             cleaned_and_filtered[nk] = v
-    model.load_state_dict(cleaned_and_filtered, strict=False)
+    model.load_state_dict(cleaned_and_filtered, strict=True)
 
 
 def resample_to_target(arr: np.ndarray, T: int) -> np.ndarray:
@@ -203,6 +215,71 @@ def resample_to_target(arr: np.ndarray, T: int) -> np.ndarray:
     return arr[idx]
 
 
+def load_localisation_audio(audio_path, labels_path, sample_id, resolution):
+    """Retain the full recording; pad only the final partial prediction bin."""
+    import soundfile as sf
+    audio, rate = sf.read(audio_path)
+    if rate != 16000 or audio.ndim != 1 or len(audio) == 0:
+        raise ValueError("Expected nonempty mono audio at 16 kHz")
+    samples_per_bin = round(rate * resolution)
+    bins = (len(audio) + samples_per_bin - 1) // samples_per_bin
+    labels = None
+    if labels_path:
+        labels = np.asarray(np.load(labels_path, allow_pickle=True).item()[sample_id], dtype=int)
+        if labels.ndim != 1 or not (0 < len(labels) <= bins):
+            raise ValueError("Label count does not match audio duration at the chosen resolution")
+    padded = np.pad(audio, (0, bins * samples_per_bin - len(audio)))
+    return audio, padded, labels
+
+
+def plot_localisation(audio, probabilities, labels, resolution, threshold, output_path, sample_id):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+    edges = np.minimum(np.arange(len(probabilities) + 1) * resolution, len(audio) / 16000)
+    predicted = (probabilities > threshold).astype(int)
+    rows = 5 if labels is not None else 3
+    fig, axes = plt.subplots(rows, 1, sharex=True, figsize=(12, 7 if rows == 5 else 5),
+                             gridspec_kw={"height_ratios": [2, 2] + [1] * (rows - 2)})
+    axes[0].plot(np.arange(len(audio)) / 16000, audio, color="#43566a", linewidth=.5)
+    axes[0].set_ylabel("Waveform")
+    axes[0].set_title(f"SAL localisation — {sample_id}")
+    axes[1].step(edges, np.r_[probabilities, probabilities[-1]], where="post", color="#245b9b")
+    axes[1].axhline(threshold, color="black", linestyle="--", linewidth=1,
+                    label=f"Decision threshold: {threshold:g}")
+    axes[1].set(ylabel="P(real)", ylim=(-.03, 1.03))
+    axes[1].legend(loc="upper right", fontsize=8)
+    def strip(ax, values, palette, title):
+        starts = np.r_[0, np.flatnonzero(np.diff(values)) + 1]
+        ends = np.r_[starts[1:], len(values)]
+        for start, end in zip(starts, ends):
+            ax.axvspan(edges[start], edges[end], color=palette[int(values[start])], linewidth=0)
+        ax.set(yticks=[], ylabel=title, ylim=(0, 1))
+    palette = {0: "#f4a340", 1: "#a8cbed", -1: "#eeeeee"}
+    strip(axes[2], predicted, palette, "Prediction")
+    axes[2].legend(handles=[Patch(color=palette[1], label="Predicted genuine"),
+                            Patch(color=palette[0], label="Predicted spoof")],
+                   loc="upper right", fontsize=8, ncol=2)
+    if labels is not None:
+        truth = np.full(len(predicted), -1, dtype=int); truth[:len(labels)] = labels
+        errors = np.full(len(predicted), -1, dtype=int); errors[:len(labels)] = 0
+        errors[:len(labels)][(labels == 1) & (predicted[:len(labels)] == 0)] = 1
+        errors[:len(labels)][(labels == 0) & (predicted[:len(labels)] == 1)] = 2
+        strip(axes[3], truth, palette, "Truth")
+        strip(axes[4], errors, {-1: "#eeeeee", 0: "#edf4ed", 1: "#c95165", 2: "#8656ad"}, "Errors")
+        axes[4].legend(handles=[Patch(color="#c95165", label="False alarm"),
+                               Patch(color="#8656ad", label="Missed spoof"),
+                               Patch(color="#edf4ed", label="Correct"),
+                               Patch(color="#eeeeee", label="No annotation")],
+                       loc="upper right", fontsize=8, ncol=4)
+    axes[-1].set(xlabel="Time (s)", xlim=(0, edges[-1]))
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
 def main():
     args = parse_args()
     print(f"Using device: {args.device}")
@@ -212,8 +289,12 @@ def main():
     from src.models.net.model import SSL_SeqModel, SSL_SeqModel_8Labels_2Loss
 
     # Load audio and labels
-    x_np, y = load_audio_and_labels(
-        args.audio_path, args.labels_path, args.sample_id, args.resolution)
+    if args.localisation:
+        original_audio, x_np, y = load_localisation_audio(
+            args.audio_path, args.labels_path, args.sample_id, args.resolution)
+    else:
+        x_np, y = load_audio_and_labels(
+            args.audio_path, args.labels_path, args.sample_id, args.resolution)
     x = torch.from_numpy(x_np).unsqueeze(0).float()
 
     device = torch.device(args.device)
@@ -256,6 +337,18 @@ def main():
     
     load_checkpoint_if_exists(model, args.model_ckpt, device)
 
+    if args.localisation:
+        with torch.inference_mode():
+            output = model(x.to(device))
+            if args.model_type == "ssl_seq_8labels_2loss":
+                output = output[1]
+            probabilities = output.softmax(-1)[0, :, 1].cpu().numpy()
+        plot_localisation(
+            original_audio, probabilities, y, args.resolution, args.threshold,
+            args.output_path, args.sample_id)
+        print(f"Saved localisation plot to: {args.output_path}")
+        return
+
     # Register hooks for Grad-CAM
     hook = SeqIOHook()
     fh = model.seq_model.register_forward_hook(hook.forward_hook)
@@ -293,20 +386,16 @@ def main():
     # Prepare visualization data
     target_T = len(cam)
     y_np = np.array(y, dtype=float)
-    if len(y_np) != target_T:
-        y_np = np.array([y_np[np.clip(int(round(t)), 0, len(y_np) - 1)] 
-                        for t in np.linspace(0, len(y_np) - 1, num=target_T)],
-                       dtype=float)
-    
-    # Get prediction probabilities
-    probs_np = probs[0, :, 1].detach().cpu().numpy()  # Probability of class 1 (real)
-    
-    # Resample probabilities to match CAM length if needed
-    if len(probs_np) != target_T:
-        probs_np = resample_to_target(probs_np, target_T)
-    
-    # Time axis in seconds
-    times = np.arange(target_T) * args.resolution
+    # The hook is before pooling (20 ms); repeat each pooled bin exactly.
+    scale = model.pool_head.scale_test
+    probs_np = probs[0, :, 1].detach().cpu().numpy()
+    if len(y_np) != len(probs_np) or not 0 <= target_T - len(y_np) * scale < scale:
+        raise ValueError("Labels, predictions, and encoder frames do not align")
+    y_np = np.repeat(y_np, scale)
+    probs_np = np.repeat(probs_np, scale)
+    cam = cam[:len(y_np)]
+    target_T = len(cam)
+    times = np.arange(target_T) * (args.resolution / scale)
 
     # Create visualization
     import matplotlib
@@ -379,6 +468,7 @@ def main():
     target_ticks = np.arange(0, max_time + 0.5, 0.5)
     tick_times = [times[np.argmin(np.abs(times - t))] for t in target_ticks]
     tick_labels = [f"{t:.0f}" if t % 1 == 0 else f"{t:.1f}" for t in tick_times]
+    ax_bot.set_xticks(tick_times)
     ax_bot.set_xticklabels(tick_labels, fontsize=10)
     ax_bot.set_xlim(times[0], times[-1])
     
