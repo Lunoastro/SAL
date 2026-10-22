@@ -239,47 +239,41 @@ def plot_localisation(audio, probabilities, labels, resolution, threshold, outpu
     from matplotlib.patches import Patch
     edges = np.minimum(np.arange(len(probabilities) + 1) * resolution, len(audio) / 16000)
     predicted = (probabilities > threshold).astype(int)
-    rows = 5 if labels is not None else 3
-    fig, axes = plt.subplots(rows, 1, sharex=True, figsize=(12, 7 if rows == 5 else 5),
-                             gridspec_kw={"height_ratios": [2, 2] + [1] * (rows - 2)})
-    axes[0].plot(np.arange(len(audio)) / 16000, audio, color="#43566a", linewidth=.5)
+    fig, axes = plt.subplots(2, 1, sharex=True, figsize=(12, 5),
+                             gridspec_kw={"height_ratios": [1.4, 1]})
+    palette = {0: "#f4a340", 1: "#a8cbed"}
+    starts = np.r_[0, np.flatnonzero(np.diff(predicted)) + 1]
+    for start, end in zip(starts, np.r_[starts[1:], len(predicted)]):
+        axes[0].axvspan(edges[start], edges[end], facecolor=palette[int(predicted[start])], alpha=0.65, linewidth=0)
+    axes[0].plot(np.arange(len(audio)) / 16000, audio, color="#2b3847", linewidth=.5, zorder=3)
     axes[0].set_ylabel("Waveform")
     axes[0].set_title(f"SAL localisation — {sample_id}")
+    handles = [Patch(facecolor=palette[1], alpha=0.65, label="Predicted genuine"),
+               Patch(facecolor=palette[0], alpha=0.65, label="Predicted spoof")]
     axes[1].step(edges, np.r_[probabilities, probabilities[-1]], where="post", color="#245b9b")
     axes[1].axhline(threshold, color="black", linestyle="--", linewidth=1,
-                    label=f"Decision threshold: {threshold:g}")
+                    label=f"Decision threshold: {threshold:g} (> genuine, ≤ spoof)")
     axes[1].set(ylabel="P(real)", ylim=(-.03, 1.03))
     axes[1].legend(loc="upper right", fontsize=8)
-    def strip(ax, values, palette, title):
-        starts = np.r_[0, np.flatnonzero(np.diff(values)) + 1]
-        ends = np.r_[starts[1:], len(values)]
-        for start, end in zip(starts, ends):
-            ax.axvspan(edges[start], edges[end], color=palette[int(values[start])], linewidth=0)
-        ax.set(yticks=[], ylabel=title, ylim=(0, 1))
-    palette = {0: "#f4a340", 1: "#a8cbed", -1: "#eeeeee"}
-    strip(axes[2], predicted, palette, "Prediction")
-    axes[2].legend(handles=[Patch(color=palette[1], label="Predicted genuine"),
-                            Patch(color=palette[0], label="Predicted spoof")],
-                   loc="upper right", fontsize=8, ncol=2)
     if labels is not None:
-        truth = np.full(len(predicted), -1, dtype=int); truth[:len(labels)] = labels
-        errors = np.full(len(predicted), -1, dtype=int); errors[:len(labels)] = 0
-        errors[:len(labels)][(labels == 1) & (predicted[:len(labels)] == 0)] = 1
-        errors[:len(labels)][(labels == 0) & (predicted[:len(labels)] == 1)] = 2
-        strip(axes[3], truth, palette, "Truth")
-        strip(axes[4], errors, {-1: "#eeeeee", 0: "#edf4ed", 1: "#c95165", 2: "#8656ad"}, "Errors")
-        axes[4].legend(handles=[Patch(color="#c95165", label="False alarm"),
-                               Patch(color="#8656ad", label="Missed spoof"),
-                               Patch(color="#edf4ed", label="Correct"),
-                               Patch(color="#eeeeee", label="No annotation")],
-                       loc="upper right", fontsize=8, ncol=4)
+        wrong = np.zeros(len(predicted), dtype=int)
+        wrong[:len(labels)] = (predicted[:len(labels)] != labels).astype(int)
+        w_starts = np.r_[0, np.flatnonzero(np.diff(wrong)) + 1]
+        for start, end in zip(w_starts, np.r_[w_starts[1:], len(wrong)]):
+            if wrong[start]:
+                axes[0].axvspan(edges[start], edges[end], facecolor="none",
+                                edgecolor="#333333", hatch="///", linewidth=0, zorder=2)
+        handles += [Patch(facecolor=palette[0], alpha=0.65, edgecolor="#333333", hatch="///", label="False alarm"),
+                    Patch(facecolor=palette[1], alpha=0.65, edgecolor="#333333", hatch="///", label="Missed spoof")]
         for boundary in edges[np.flatnonzero(np.diff(labels)) + 1]:
             for ax in axes:
-                ax.axvline(boundary, color="gray", linestyle="--", linewidth=1, alpha=0.8)
-        fa, ms = int((errors == 1).sum()), int((errors == 2).sum())
+                ax.axvline(boundary, color="gray", linestyle="--", linewidth=1, alpha=0.8, zorder=4)
+        fa = int(((labels == 1) & (predicted[:len(labels)] == 0)).sum())
+        ms = int(((labels == 0) & (predicted[:len(labels)] == 1)).sum())
         summary = ("No misclassified annotated frames" if fa + ms == 0 else
                    f"{fa + ms}/{len(labels)} misclassified (FA: {fa}, missed: {ms})")
         axes[0].set_title(f"SAL localisation — {sample_id} | {summary} (threshold {threshold:g}, {resolution * 1000:g} ms)")
+    axes[0].legend(handles=handles, loc="upper right", fontsize=8, ncol=len(handles))
     axes[-1].set(xlabel="Time (s)", xlim=(0, edges[-1]))
     fig.tight_layout()
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
