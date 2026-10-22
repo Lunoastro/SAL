@@ -428,6 +428,9 @@ class SALTrainer(LightningModule):
 
     def on_test_start(self) -> None:
         """Lightning hook that is called when testing begins."""
+        # Single-device evaluation, matching cluster/eval_lps.sbatch.
+        self._position_total = np.zeros(8, dtype=np.int64)
+        self._position_wrong = np.zeros(8, dtype=np.int64)
         self.test_loss.reset()
         self.test_eer.reset()
         self.test_acc.reset()
@@ -477,6 +480,10 @@ class SALTrainer(LightningModule):
         
         self.test_eer.update(preds_flat[:, 1] - preds_flat[:, 0], labels_flat)
         self.test_acc.update(preds_flat, labels_flat)
+        positions = labels_flat8.detach().cpu().numpy().astype(int)
+        wrong = (preds_flat.argmax(dim=1) != labels_flat).detach().cpu().numpy()
+        self._position_total += np.bincount(positions, minlength=8)
+        self._position_wrong += np.bincount(positions[wrong], minlength=8)
         self.log("test/loss", self.test_loss, on_step=False,
                  on_epoch=True, prog_bar=True)
 
@@ -502,6 +509,9 @@ class SALTrainer(LightningModule):
         result_file = os.path.join(self.exp_dir, "result.txt")
         with open(result_file, "a") as f:
             f.write(f"EER={eer:.4f} ACC={acc:.4f} F1={f1:.4f}\n")
+            for i, total in enumerate(self._position_total):
+                accuracy = 100 * (1 - self._position_wrong[i] / total) if total else 0.0
+                f.write(f"{i}: acc: {accuracy:.4f}, total_samples: {float(total):.4f},\n")
 
         if self.vis and hasattr(self, "_vis_items") and len(self._vis_items) > 0:
             vis_dir = os.path.join(self.exp_dir, "vis")

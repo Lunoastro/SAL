@@ -53,7 +53,7 @@ cd "$repo"
 
 base="${SAL_LOG_DIR:?Export SAL_LOG_DIR before submitting this job}"
 checkpoint="$base/$run_dir/train/checkpoints/$file"
-output_dir="$base/$run_dir/eval_lps/$part"
+output_dir="${EVAL_OUTPUT_DIR:-$base/$run_dir/eval_lps/$part}"
 [[ -r "$checkpoint" ]] || { echo "Checkpoint missing for $run" >&2; exit 1; }
 
 module load apptainer
@@ -73,5 +73,7 @@ srun apptainer exec \
     "model=$model" \
     "data.part=$part" \
     "data.num_workers=0" \
+    "data.resolution_test=${EVAL_RESOLUTION:-0.02}" \
+    "model.net.resolution_test=${EVAL_RESOLUTION:-0.02}" \
     "hydra.run.dir=$output_dir" \
     "+trainer.enable_progress_bar=false"

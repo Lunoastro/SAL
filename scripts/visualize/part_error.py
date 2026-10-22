@@ -6,6 +6,8 @@ Example usage:
 """
 
 import argparse
+import csv
+import math
 import os
 import re
 from typing import Dict, List, Tuple, Optional
@@ -94,6 +96,75 @@ def plot_error_rates(
     plt.close(fig)
 
 
+POSITIONS = ["Start", "Middle", "End", "Unit"]
+
+
+def error_percent(data):
+    return [100 - data[i][0] if data[i][1] else float("nan") for i in range(8)]
+
+
+def analyse_results(specs, output_path, reference):
+    results = {}
+    for condition, model, resolution, path in specs:
+        resolution = float(resolution)
+        if not math.isfinite(resolution) or resolution <= 0:
+            raise ValueError("Resolution must be a positive number of milliseconds")
+        key = (condition, model)
+        if key in results:
+            raise ValueError(f"Duplicate condition/model: {key}")
+        results[key] = (resolution, path, parse_result_file(path))
+    deltas = []
+    for (condition, model), (resolution, path, data) in results.items():
+        if not reference or condition == reference:
+            continue
+        if (reference, model) not in results:
+            raise ValueError(f"Missing {reference} reference for {model}")
+        base_resolution, _, base = results[reference, model]
+        if resolution != base_resolution:
+            raise ValueError(f"{condition}/{model}: {resolution} ms differs from reference {base_resolution} ms")
+        deltas.append((f"{condition} / {model}", [a-b for a,b in zip(error_percent(data), error_percent(base))]))
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    stem = os.path.splitext(output_path)[0]
+    with open(stem + ".csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["condition", "model", "resolution_ms", "class", "position", "frames", "error_percent", "estimated_errors", "delta_pp", "source"])
+        for (condition, model), (resolution, path, data) in results.items():
+            rates = error_percent(data)
+            base = error_percent(results[reference, model][2]) if reference else None
+            for i, rate in enumerate(rates):
+                writer.writerow([condition, model, resolution, "spoof" if i < 4 else "genuine", POSITIONS[i % 4], int(data[i][1]), rate, rate * data[i][1] / 100 if data[i][1] else 0, rate-base[i] if base else "", os.path.abspath(path)])
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    width = .8 / len(results)
+    for j, ((condition, model), (resolution, _, data)) in enumerate(results.items()):
+        rates = error_percent(data)
+        for panel, ax in enumerate(axes):
+            ax.bar([i-.4+width*(j+.5) for i in range(4)], rates[panel*4:panel*4+4], width,
+                   label=f"{condition} / {model} ({resolution:g} ms)")
+    for ax, title in zip(axes, ["Spoof misses", "Genuine false alarms"]):
+        ax.set(title=title, ylabel="Error rate (%)", xticks=range(4), xticklabels=POSITIONS)
+        ax.grid(axis="y", alpha=.2)
+    axes[1].legend(fontsize=8)
+    fig.text(.5, .01, "Descriptive checkpoint results; counts in companion CSV. Missing categories have no bar.", ha="center", fontsize=9)
+    fig.tight_layout(rect=(0, .04, 1, 1))
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+    if deltas:
+        fig, ax = plt.subplots(figsize=(12, max(3, len(deltas)*.55+1.5)))
+        values = [row for _, row in deltas]
+        limit = max([abs(v) for row in values for v in row if math.isfinite(v)] + [1])
+        im = ax.imshow(values, cmap="RdBu_r", vmin=-limit, vmax=limit, aspect="auto")
+        ax.set(xticks=range(8), xticklabels=[f"{c}\n{p}" for c in ("Spoof", "Genuine") for p in POSITIONS],
+               yticks=range(len(deltas)), yticklabels=[name for name, _ in deltas], title=f"Error change relative to {reference}")
+        for row, vals in enumerate(values):
+            for col, value in enumerate(vals):
+                ax.text(col, row, f"{value:+.2f}" if math.isfinite(value) else "N/A", ha="center", va="center")
+        fig.colorbar(im, ax=ax, label="Percentage points (positive = worse)")
+        fig.tight_layout()
+        fig.savefig(stem + "_delta.png", dpi=180)
+        plt.close(fig)
+    print(f"Saved {output_path} and {stem}.csv" + (f" and {stem}_delta.png" if deltas else ""))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Plot pair error rates from a result file.",
@@ -106,8 +177,7 @@ Example:
     parser.add_argument(
         "--file",
         type=str,
-        required=True,
-        help="Path to result.txt file",
+        help="Path to result.txt file (legacy pooled plot)",
     )
     parser.add_argument(
         "--out",
@@ -121,7 +191,17 @@ Example:
         default="",
         help="Plot title (leave empty for no title)",
     )
+    parser.add_argument("--result", nargs=4, action="append", metavar=("CONDITION", "MODEL", "MS", "FILE"),
+                        help="Repeat for each result; e.g. --result PS S3 160 result_S3.txt")
+    parser.add_argument("--reference", help="Reference condition for same-resolution differences, e.g. PS")
     args = parser.parse_args()
+    if bool(args.file) == bool(args.result):
+        parser.error("Choose --file or repeated --result arguments")
+    if args.result:
+        analyse_results(args.result, args.out, args.reference)
+        return
+    if args.reference:
+        parser.error("--reference requires --result")
 
     data = parse_result_file(args.file)
     rates = compute_pair_error_rates(data)
