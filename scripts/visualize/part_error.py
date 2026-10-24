@@ -133,19 +133,35 @@ def analyse_results(specs, output_path, reference):
             base = error_percent(results[reference, model][2]) if reference else None
             for i, rate in enumerate(rates):
                 writer.writerow([condition, model, resolution, "spoof" if i < 4 else "genuine", POSITIONS[i % 4], int(data[i][1]), rate, rate * data[i][1] / 100 if data[i][1] else 0, rate-base[i] if base else "", os.path.abspath(path)])
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5.2), sharey=True)
+    conditions = list(dict.fromkeys(c for c, _ in results))
+    models = list(dict.fromkeys(m for _, m in results))
+    palette = ["#3b75af", "#e07b39", "#3a9276", "#8c564b", "#7f7f7f", "#bcbd22"]
     width = .8 / len(results)
     for j, ((condition, model), (resolution, _, data)) in enumerate(results.items()):
         rates = error_percent(data)
+        c_idx = conditions.index(condition) if len(conditions) > 1 else models.index(model)
+        m_idx = models.index(model)
+        color = palette[c_idx % len(palette)]
+        use_hatch = len(conditions) > 1 and len(models) > 1 and m_idx == 0
         for panel, ax in enumerate(axes):
-            ax.bar([i-.4+width*(j+.5) for i in range(4)], rates[panel*4:panel*4+4], width,
+            ax.bar([i - .4 + width * (j + .5) for i in range(4)], rates[panel * 4:panel * 4 + 4], width,
+                   color=color, alpha=0.65 if use_hatch else 0.92,
+                   edgecolor="#222222" if use_hatch else "white", linewidth=0.6,
+                   hatch="///" if use_hatch else None,
                    label=f"{condition} / {model} ({resolution:g} ms)")
-    for ax, title in zip(axes, ["Spoof misses", "Genuine false alarms"]):
-        ax.set(title=title, ylabel="Error rate (%)", xticks=range(4), xticklabels=POSITIONS)
-        ax.grid(axis="y", alpha=.2)
-    axes[1].legend(fontsize=8)
-    fig.text(.5, .01, "Descriptive checkpoint results; counts in companion CSV. Missing categories have no bar.", ha="center", fontsize=9)
-    fig.tight_layout(rect=(0, .04, 1, 1))
+    for panel, (ax, title) in enumerate(zip(axes, ["Spoof misses (true spoof → pred genuine)", "Genuine false alarms (true genuine → pred spoof)"])):
+        totals = [sum(d[panel * 4 + i][1] for _, _, d in results.values()) for i in range(4)]
+        class_sum = sum(totals) or 1.0
+        shares = [100.0 * t / class_sum for t in totals]
+        xlabels = [f"{p}\n({s:.1f}%)" if s >= 0.1 else f"{p}\n(<0.1%)" for p, s in zip(POSITIONS, shares)]
+        ax.set(title=title, ylabel="Error rate (%)", xticks=range(4), xticklabels=xlabels)
+        ax.yaxis.set_tick_params(labelleft=True)
+        ax.grid(axis="y", alpha=.25)
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.99),
+               ncol=min(len(results), 3), fontsize=9, frameon=True)
+    fig.tight_layout(rect=(0, .04, 1, .88))
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
     if deltas:

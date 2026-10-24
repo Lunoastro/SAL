@@ -246,8 +246,8 @@ def plot_localisation(audio, probabilities, labels, resolution, threshold, outpu
     for start, end in zip(starts, np.r_[starts[1:], len(predicted)]):
         axes[0].axvspan(edges[start], edges[end], facecolor=palette[int(predicted[start])], alpha=0.65, linewidth=0)
     axes[0].plot(np.arange(len(audio)) / 16000, audio, color="#2b3847", linewidth=.5, zorder=3)
-    axes[0].set_ylabel("Waveform")
-    axes[0].set_title(f"SAL localisation — {sample_id}")
+    peak = float(np.max(np.abs(audio))) or 1.0
+    axes[0].set(ylabel="Waveform", ylim=(-peak * 1.12, peak * 1.32), title=f"SAL localisation — {sample_id}")
     handles = [Patch(facecolor=palette[1], alpha=0.65, label="Predicted genuine"),
                Patch(facecolor=palette[0], alpha=0.65, label="Predicted spoof")]
     axes[1].step(edges, np.r_[probabilities, probabilities[-1]], where="post", color="#245b9b")
