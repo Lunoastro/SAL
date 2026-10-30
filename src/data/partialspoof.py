@@ -29,6 +29,7 @@ class PartialSpoofDataModule(LightningDataModule):
             use_augmentation=False,
             augmentation_algo=4,
             augmentation_prob=0.5,
+            test_split='eval',  # 'dev' to pick thresholds on PS dev
             augment_eval=True,  # upstream behaviour; False = RawBoost on train split only (as in the paper)
 
     ) -> None:
@@ -48,6 +49,7 @@ class PartialSpoofDataModule(LightningDataModule):
         self.augmentation_algo = augmentation_algo
         self.augmentation_prob = augmentation_prob
         self.augment_eval = augment_eval
+        self.test_split = test_split
 
     def setup(self, stage=None):
         if stage == 'fit' or stage is None:
@@ -64,7 +66,7 @@ class PartialSpoofDataModule(LightningDataModule):
 
         if stage == 'test' or stage is None:
             self.test_dataset = self.get_dataset(
-                split='eval',
+                split=self.test_split,
                 resolution=self.resolution_test,
                 pad_mode='test'
             )

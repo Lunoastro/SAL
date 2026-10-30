@@ -12,12 +12,13 @@
 
 set -euo pipefail
 
-[[ $# -eq 2 ]] || { echo "Usage: sbatch cluster/eval_lps.sbatch RUN PART" >&2; exit 2; }
+[[ $# -eq 2 ]] || { echo "Usage: sbatch cluster/eval_lps.sbatch RUN PART  (PART: cf|cp|oa = LPS, dev|eval = PartialSpoof)" >&2; exit 2; }
 run="$1"
 part="$2"
 case "$part" in
-    cf|cp|oa) ;;
-    *) echo "Part must be cf, cp, or oa" >&2; exit 2 ;;
+    cf|cp|oa) config=eval_lps; data_arg="data.part=$part" ;;
+    dev|eval) config=eval; data_arg="+data.test_split=$part" ;;  # PartialSpoof
+    *) echo "Part must be cf, cp, oa (LPS) or dev, eval (PartialSpoof)" >&2; exit 2 ;;
 esac
 
 case "$run" in
@@ -63,15 +64,15 @@ mkdir "$output_dir" || { echo "Cannot create evaluation directory; check for an 
 mkdir "$output_dir/checkpoints"
 ln -s "$checkpoint" "$output_dir/checkpoints/$file"
 
-echo "Evaluating $run on LlamaPartialSpoof $part"
+echo "Evaluating $run on $part (config $config, resolution ${EVAL_RESOLUTION:-0.02})"
 srun apptainer exec \
     --nv --cleanenv --pwd "$repo" \
     --env "PROJECT_ROOT=$repo" \
     --env "SAL_EVAL_CHECKPOINT=$output_dir/checkpoints/$file" \
     "$repo/cluster/sal.sif" \
-    python -u src/eval.py --config-name eval_lps \
+    python -u src/eval.py --config-name "$config" \
     "model=$model" \
-    "data.part=$part" \
+    "$data_arg" \
     "data.num_workers=0" \
     "data.resolution_test=${EVAL_RESOLUTION:-0.02}" \
     "model.net.resolution_test=${EVAL_RESOLUTION:-0.02}" \

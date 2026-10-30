@@ -25,6 +25,14 @@ Usage:
         --output_path /path/to/your_output_path.png \
         --show
 
+    # Localisation with a frozen PS-dev threshold (value from thresholds.json,
+    # logit-difference scale) over a seeded sample list from make_sample_list.py:
+    python scripts/visualize/gradcam.py --localisation \
+        --sample_list eval/visualize/sample_list_ps_eval.tsv --audio_dir /path/to/con_wav \
+        --labels_path /path/to/eval_seglab_0.16.npy --ckpt /path/to/xlsr2_300m.pt \
+        --model_ckpt /path/to/model.ckpt --logit_threshold -1.25 \
+        --output_path out/localisation_S7_{sample_id}.png
+
 Arguments:
     Required:
         --audio_path: Path to audio file (.wav format)
@@ -66,12 +74,12 @@ import torch.nn.functional as F
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Grad-CAM visualization for SSL_SeqModel")
-    parser.add_argument("--audio_path", type=str, required=True,
+    parser.add_argument("--audio_path", type=str,
                         help="Path to audio file (.wav)")
     parser.add_argument("--labels_path", type=str,
                         help="Path to segment labels (.npy file)")
-    parser.add_argument("--sample_id", type=str, required=True,
-                        help="Sample ID to load from labels")
+    parser.add_argument("--sample_id", type=str,
+                        help="Sample ID to load from labels (not needed with --sample_list)")
     parser.add_argument("--ckpt", type=str, required=True,
                         help="Checkpoint path for SSL encoder (e.g., xlsr2_300m.pt)")
     parser.add_argument("--model_ckpt", type=str,
@@ -106,11 +114,37 @@ def parse_args():
                         help="Show plot interactively")
     parser.add_argument("--localisation", action="store_true",
                         help="Plot waveform, predictions and optional ground-truth errors; no Grad-CAM")
-    parser.add_argument("--threshold", type=float, default=0.5,
-                        help="P(real) threshold for localisation; default matches binary argmax")
+    parser.add_argument("--threshold", type=float, default=None,
+                        help="P(real) threshold for localisation; default 0.5 matches binary argmax")
+    # thresholds.json is on the logit[1]-logit[0] scale; P(real) = sigmoid(that), so convert.
+    parser.add_argument("--logit_threshold", type=float, default=None,
+                        help="Threshold on logit[1]-logit[0] (the scale of thresholds.json); "
+                             "converted to P(real) via sigmoid. Mutually exclusive with --threshold")
+    parser.add_argument("--sample_list", type=str, default=None,
+                        help="TSV/text file with one utterance ID per line (first column; "
+                             "'#' comments and a 'utt_id' header are skipped). Localisation only")
+    parser.add_argument("--audio_dir", type=str, default=None,
+                        help="Directory holding <utt_id>.wav; required with --sample_list")
     args = parser.parse_args()
+    if args.threshold is not None and args.logit_threshold is not None:
+        parser.error("use either --threshold or --logit_threshold, not both")
+    if args.logit_threshold is not None:
+        args.threshold = float(1.0 / (1.0 + np.exp(-args.logit_threshold)))
+        print(f"logit threshold {args.logit_threshold:g} -> P(real) threshold {args.threshold:.6g}")
+    elif args.threshold is None:
+        args.threshold = 0.5  # old behaviour: equivalent to argmax of the binary head
     if not 0 < args.threshold < 1:
         parser.error("threshold must lie strictly between 0 and 1")
+    if args.sample_list:
+        if not args.localisation:
+            parser.error("--sample_list is only supported with --localisation")
+        if not args.audio_dir:
+            parser.error("--sample_list requires --audio_dir")
+        if "{sample_id}" not in args.output_path:
+            parser.error("with --sample_list, --output_path must contain '{sample_id}'")
+    else:
+        if not args.audio_path or not args.sample_id:
+            parser.error("--audio_path and --sample_id are required (or use --sample_list)")
     if not args.localisation and not args.labels_path:
         parser.error("Grad-CAM reproduction requires --labels_path")
     if args.localisation and not args.model_ckpt:
@@ -205,6 +239,23 @@ def load_checkpoint_if_exists(model: torch.nn.Module, ckpt_path: Optional[str],
     model.load_state_dict(cleaned_and_filtered, strict=True)
 
 
+def read_sample_list(path: str):
+    """Read utterance IDs from the first column of a sample list (see make_sample_list.py)."""
+    ids = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            first = line.split("\t")[0].split()[0]
+            if first == "utt_id":  # header row
+                continue
+            ids.append(first)
+    if not ids:
+        raise ValueError(f"No utterance IDs found in {path}")
+    return ids
+
+
 def resample_to_target(arr: np.ndarray, T: int) -> np.ndarray:
     """Resample array to target length T."""
     if len(arr) == T:
@@ -291,13 +342,11 @@ def main():
 
     # Load audio and labels
     if args.localisation:
-        original_audio, x_np, y = load_localisation_audio(
-            args.audio_path, args.labels_path, args.sample_id, args.resolution)
+        # (Audio is loaded per utterance in the localisation loop below.)
+        pass
     else:
         x_np, y = load_audio_and_labels(
             args.audio_path, args.labels_path, args.sample_id, args.resolution)
-    x = torch.from_numpy(x_np).unsqueeze(0).float()
-
     device = torch.device(args.device)
 
     # Auto-detect ssl_encoder from ckpt if not specified
@@ -339,16 +388,29 @@ def main():
     load_checkpoint_if_exists(model, args.model_ckpt, device)
 
     if args.localisation:
-        with torch.inference_mode():
-            output = model(x.to(device))
-            if args.model_type == "ssl_seq_8labels_2loss":
-                output = output[1]
-            probabilities = output.softmax(-1)[0, :, 1].cpu().numpy()
-        plot_localisation(
-            original_audio, probabilities, y, args.resolution, args.threshold,
-            args.output_path, args.sample_id)
-        print(f"Saved localisation plot to: {args.output_path}")
+        if args.sample_list:
+            jobs = [(sid, os.path.join(args.audio_dir, f"{sid}.wav"),
+                     args.output_path.replace("{sample_id}", sid))
+                    for sid in read_sample_list(args.sample_list)]
+            print(f"Sample list {args.sample_list}: {len(jobs)} utterances")
+        else:
+            jobs = [(args.sample_id, args.audio_path, args.output_path)]
+        for sample_id, audio_path, output_path in jobs:
+            original_audio, x_np, y = load_localisation_audio(
+                audio_path, args.labels_path, sample_id, args.resolution)
+            x = torch.from_numpy(x_np).unsqueeze(0).float()
+            with torch.inference_mode():
+                output = model(x.to(device))
+                if args.model_type == "ssl_seq_8labels_2loss":
+                    output = output[1]
+                probabilities = output.softmax(-1)[0, :, 1].cpu().numpy()
+            plot_localisation(
+                original_audio, probabilities, y, args.resolution, args.threshold,
+                output_path, sample_id)
+            print(f"Saved localisation plot to: {output_path}")
         return
+
+    x = torch.from_numpy(x_np).unsqueeze(0).float()
 
     # Register hooks for Grad-CAM
     hook = SeqIOHook()

@@ -3,6 +3,11 @@ Simple script to visualize pair error rates from a result file.
 
 Example usage:
     python part_error.py --file logs/my_model/train/result.txt --out plots/error_rates.png
+    python part_error.py --result PS S7 20 ps/result.txt --result LPS S7 20 lps/result.txt \
+        --reference PS --out plots/position_errors.png
+
+Note: result.txt is appended to on every rerun; this script always reads the LAST
+complete 0..7 block (see parse_result_file) and logs which block it used.
 """
 
 import argparse
@@ -18,36 +23,59 @@ import matplotlib.pyplot as plt
 LineData = Tuple[float, float]
 
 
-def parse_result_file(file_path: str) -> Dict[int, LineData]:
+def parse_result_file(file_path: str, verbose: bool = True) -> Dict[int, LineData]:
     """
     Parse a result.txt-like file and extract (acc, total_samples) for indices 0..7.
 
-    Returns a dict: {index: (acc, total_samples)}. Stops after the first complete 0..7 set.
+    Returns {index: (acc, total_samples)} from the LAST complete 0..7 block: result.txt is
+    opened in append mode, so reruns add blocks and the newest one belongs to the latest run.
+    A block starts at an 'EER=' line (or at index 0 / a repeated index); an incomplete
+    trailing block is skipped with a warning. result.txt does not record checkpoint or
+    resolution, so use a fresh EVAL_OUTPUT_DIR per run.
     """
     index_pattern = re.compile(
         r"^(?P<idx>[0-7]):\s*acc:\s*(?P<acc>[0-9]+\.[0-9]+),\s*total_samples:\s*(?P<total>[0-9]+\.[0-9]+)",
     )
-    extracted: Dict[int, LineData] = {}
+    blocks: List[Dict[int, LineData]] = []
+    current: Optional[Dict[int, LineData]] = None
     with open(file_path, "r", encoding="utf-8") as f:
         for line in f:
-            m = index_pattern.match(line.strip())
+            stripped = line.strip()
+            if stripped.startswith("EER="):
+                # Header of a new run -> start a fresh block.
+                current = {}
+                blocks.append(current)
+                continue
+            m = index_pattern.match(stripped)
             if not m:
                 continue
             idx = int(m.group("idx"))
-            acc = float(m.group("acc"))
-            total = float(m.group("total"))
-            # Only keep the first occurrence per index (assume the first full set 0..7 is desired)
-            if idx not in extracted:
-                extracted[idx] = (acc, total)
-            # Break once we have a complete set
-            if len(extracted) == 8:
-                break
-    if len(extracted) < 8:
-        missing = sorted(set(range(8)) - set(extracted.keys()))
+            # index 0 or a repeated index also starts a block (files without an EER= header)
+            if current is None or (idx == 0 and len(current) > 0) or idx in current:
+                current = {}
+                blocks.append(current)
+            current[idx] = (float(m.group("acc")), float(m.group("total")))
+    complete = [i for i, b in enumerate(blocks) if len(b) == 8]
+    if not complete:
+        seen = blocks[-1] if blocks else {}
+        missing = sorted(set(range(8)) - set(seen.keys()))
         raise ValueError(
-            f"File {file_path} does not contain a complete first set of indices 0..7. Missing: {missing}"
+            f"File {file_path} does not contain a complete set of indices 0..7. Missing: {missing}"
         )
-    return extracted
+    used = complete[-1]
+    if verbose:
+        # Log which block was used so a stale/duplicated result.txt is visible in the job log.
+        print(f"[part_error] {file_path}: using block {used + 1} of {len(blocks)} "
+              f"({len(complete)} complete; last complete block is used)")
+        if len(blocks) > 1:
+            # Several runs were appended to this file; see LIMITATION above.
+            print(f"[part_error] WARNING {file_path}: {len(blocks)} result blocks found; result.txt "
+                  f"does not record checkpoint or resolution, so it cannot be checked that the "
+                  f"last block is the run you want. Prefer a fresh EVAL_OUTPUT_DIR per run.")
+        if used != len(blocks) - 1:
+            print(f"[part_error] WARNING {file_path}: the final block is incomplete "
+                  f"(crashed or still running?); fell back to block {used + 1}")
+    return blocks[used]
 
 
 def compute_pair_error_rates(index_to_data: Dict[int, LineData]) -> List[float]:
@@ -137,24 +165,43 @@ def analyse_results(specs, output_path, reference):
     conditions = list(dict.fromkeys(c for c, _ in results))
     models = list(dict.fromkeys(m for _, m in results))
     palette = ["#3b75af", "#e07b39", "#3a9276", "#8c564b", "#7f7f7f", "#bcbd22"]
+    # colour = condition, hatch = model, so every condition/model pair stays distinguishable
+    hatches = ["///", None, "xx", "\\\\", "..", "++", "--", "oo"]
     width = .8 / len(results)
     for j, ((condition, model), (resolution, _, data)) in enumerate(results.items()):
         rates = error_percent(data)
         c_idx = conditions.index(condition) if len(conditions) > 1 else models.index(model)
         m_idx = models.index(model)
         color = palette[c_idx % len(palette)]
-        use_hatch = len(conditions) > 1 and len(models) > 1 and m_idx == 0
+        hatch = hatches[m_idx % len(hatches)] if len(conditions) > 1 and len(models) > 1 else None
         for panel, ax in enumerate(axes):
             ax.bar([i - .4 + width * (j + .5) for i in range(4)], rates[panel * 4:panel * 4 + 4], width,
-                   color=color, alpha=0.65 if use_hatch else 0.92,
-                   edgecolor="#222222" if use_hatch else "white", linewidth=0.6,
-                   hatch="///" if use_hatch else None,
+                   color=color, alpha=0.65 if hatch else 0.92,
+                   edgecolor="#222222" if hatch else "white", linewidth=0.6,
+                   hatch=hatch,
                    label=f"{condition} / {model} ({resolution:g} ms)")
     for panel, (ax, title) in enumerate(zip(axes, ["Spoof misses (true spoof → pred genuine)", "Genuine false alarms (true genuine → pred spoof)"])):
-        totals = [sum(d[panel * 4 + i][1] for _, _, d in results.values()) for i in range(4)]
-        class_sum = sum(totals) or 1.0
-        shares = [100.0 * t / class_sum for t in totals]
-        xlabels = [f"{p}\n({s:.1f}%)" if s >= 0.1 else f"{p}\n(<0.1%)" for p, s in zip(POSITIONS, shares)]
+        # class shares per condition (from one model's counts), never pooled across datasets
+        share_parts = []
+        for condition in conditions:
+            per_model = [d for (c, _), (_, _, d) in results.items() if c == condition]
+            counts = [tuple(d[panel * 4 + i][1] for i in range(4)) for d in per_model]
+            if len(set(counts)) > 1:
+                print(f"[part_error] WARNING: models in condition {condition!r} have different "
+                      f"frame counts; class shares use the first model's counts")
+            totals = counts[0]
+            class_sum = sum(totals) or 1.0
+            share_parts.append((condition, [100.0 * t / class_sum for t in totals]))
+
+        def fmt_share(s):
+            return f"{s:.1f}%" if s >= 0.1 else "<0.1%"
+        if len(share_parts) == 1:
+            shares = share_parts[0][1]
+            xlabels = [f"{p}\n({fmt_share(shares[i])})" for i, p in enumerate(POSITIONS)]
+        else:
+            # one line per condition so the labels do not overlap neighbouring ticks
+            xlabels = [f"{p}\n" + "\n".join(f"{c} {fmt_share(sh[i])}" for c, sh in share_parts)
+                       for i, p in enumerate(POSITIONS)]
         ax.set(title=title, ylabel="Error rate (%)", xticks=range(4), xticklabels=xlabels)
         ax.yaxis.set_tick_params(labelleft=True)
         ax.grid(axis="y", alpha=.25)

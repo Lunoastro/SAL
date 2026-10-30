@@ -1,4 +1,5 @@
 import os
+import pickle
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -269,6 +270,7 @@ class BaselineTrainer(LightningModule):
                 # Store utterance error rate information
                 self._utt_error_rates.append({
                     "utt_id": utt_id, 
+                    "logits": preds[i, :L].float().cpu().numpy(),
                     "error_rate": err_rate,
                     "scores": seq_scores, 
                     "labels": seq_labels
@@ -300,6 +302,10 @@ class BaselineTrainer(LightningModule):
                 for sub_key, value in subdict.items():
                     f.write(f" {sub_key}: {value:.4f},")
                 f.write("\n")
+        # per-frame logits for offline analysis (thresholds, rescoring, subsets)
+        with open(os.path.join(self.exp_dir, "frame_scores.pkl"), "wb") as f:
+            pickle.dump([(u["utt_id"], u["logits"], u["labels"].numpy().astype(np.int8))
+                         for u in self._utt_error_rates], f)
 
         # visualization of hardest/easiest utterances
         if self.vis and hasattr(self, "_vis_items") and len(self._vis_items) > 0:
