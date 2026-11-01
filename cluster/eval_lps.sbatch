@@ -17,7 +17,7 @@ run="$1"
 part="$2"
 case "$part" in
     cf|cp|oa) config=eval_lps; data_arg="data.part=$part" ;;
-    dev|eval) config=eval; data_arg="+data.test_split=$part" ;;  # PartialSpoof
+    dev|eval|*_genuine|*_spoof) config=eval; data_arg="+data.test_split=$part" ;;  # PartialSpoof (+ split-audio copies)
     *) echo "Part must be cf, cp, oa (LPS) or dev, eval (PartialSpoof)" >&2; exit 2 ;;
 esac
 
@@ -58,6 +58,8 @@ output_dir="${EVAL_OUTPUT_DIR:-$base/$run_dir/eval_lps/$part}"
 [[ -r "$checkpoint" ]] || { echo "Checkpoint missing for $run" >&2; exit 1; }
 
 module load apptainer
+ps_env=()  # PS_ROOT=<dir> evaluates PartialSpoof-format data from another root (split-audio copies)
+[[ -n "${PS_ROOT:-}" ]] && ps_env=(--env "PARTIALSPOOF_ROOT=$PS_ROOT")
 # Reserve atomically
 mkdir -p "$(dirname "$output_dir")"
 mkdir "$output_dir" || { echo "Cannot create evaluation directory; check for an earlier run" >&2; exit 1; }
@@ -67,7 +69,7 @@ ln -s "$checkpoint" "$output_dir/checkpoints/$file"
 echo "Evaluating $run on $part (config $config, resolution ${EVAL_RESOLUTION:-0.02})"
 srun apptainer exec \
     --nv --cleanenv --pwd "$repo" \
-    --env "PROJECT_ROOT=$repo" \
+    --env "PROJECT_ROOT=$repo" "${ps_env[@]}" \
     --env "SAL_EVAL_CHECKPOINT=$output_dir/checkpoints/$file" \
     "$repo/cluster/sal.sif" \
     python -u src/eval.py --config-name "$config" \

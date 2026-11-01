@@ -69,7 +69,7 @@ def main(root):
         model, name = d.parent.name, d.name
         ids, score, y = data[d] = load(d)
         sc, yy = np.concatenate(score), np.concatenate(y)
-        e, t = eer(sc, yy)
+        e, t = eer(sc, yy) if 0 < yy.sum() < len(yy) else (float("nan"), float("nan"))  # single-class run
         if name.startswith("dev-"):
             thr.setdefault(model, {})[res_of(d)] = t
         ref_eer, ref_tot = result_txt(d)
@@ -120,6 +120,24 @@ def main(root):
         for cname, t in (("argmax", 0.0), ("frozen_ps_dev", thr[model]["0.16"])):
             rows.append(dict(model=model, run="eval-0.16-on-0.02-grid", res="0.16->0.02", cutoff=cname,
                              threshold=t, group="all", **rates((s20 > t).astype(np.int8), y20)))
+
+    # split-audio copies (make_split_audio.py): argv[2] = manifest; ROOT/<model>/split_{genuine,spoof}
+    # are compared with the same frames scored inside their original recordings (ROOT/<model>/eval-0.02)
+    man = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+    for model in (thr if man else []):
+        ctx = root / model / "eval-0.02"
+        if ctx not in data:
+            continue
+        by_utt = {u: (s, y) for u, s, y in zip(*data[ctx])}
+        for kind in ("genuine", "spoof"):
+            seg = [l.split("\t") for l in open(man).read().split("\n")[1:] if l.split("\t")[1:2] == [kind]]
+            if not seg:
+                continue
+            s_ = np.concatenate([by_utt[u][0][int(a):int(b)] for u, _, a, b in seg])
+            y_ = np.concatenate([by_utt[u][1][int(a):int(b)] for u, _, a, b in seg])
+            for cname, t in (("argmax", 0.0), ("frozen_ps_dev", thr[model].get("0.02", 0.0))):
+                rows.append(dict(model=model, run=f"split_{kind}-in_context", res="0.02", cutoff=cname,
+                                 threshold=t, group="all", **rates((s_ > t).astype(np.int8), y_)))
 
     cols = ["model", "run", "res", "cutoff", "threshold", "group", "eer",
             "n_genuine", "n_spoof", "false_alarm", "miss"]
