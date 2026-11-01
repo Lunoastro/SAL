@@ -38,6 +38,8 @@ case "$run" in
         file="epoch_013-step_011116-eer_2.4567.ckpt" ;;
     S7) run_dir="S7/run4"; model="sal/seq_cf_8labels_2loss"
         file="epoch_012-step_010322-eer_2.4693.ckpt" ;;
+    S7_fixed) run_dir="S7_fixed/run1"; model="sal/seq_cf_8labels_2loss"  # corrected CSM; csm_fix is training-only
+        file="epoch_022-step_018262-eer_0.9787.ckpt" ;;
     S8) run_dir="S8/run1"; model="sal/seq_cf_8labels_2loss"
         file="epoch_010-step_008734-eer_2.4932.ckpt" ;;
     WavLM) run_dir="wavlm-cf/run4"; model="sal/wavlm_cf"
