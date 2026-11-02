@@ -9,6 +9,7 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 
 from src.data.base_dataset import BaseDataset
+from src.data.utils import read_audio
 
 
 class LlamaPartialSpoofDataModule(LightningDataModule):
@@ -87,7 +88,7 @@ class LlamaPartialSpoofDataset(BaseDataset):
         return filtered_list
 
     def input_load_fn(self, path):
-        audio, sr = sf.read(path)
+        audio, sr = read_audio(path)
         return audio
 
     def label_load_fn(self):

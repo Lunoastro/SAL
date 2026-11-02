@@ -9,6 +9,7 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 
 from src.data.base_dataset import BaseDataset
+from src.data.utils import read_audio
 from src.data.RawBoost import process_Rawboost_feat
 
 
@@ -117,7 +118,7 @@ class PartialSpoofDataset(BaseDataset):
         super().__init__(*args, **kwargs)
 
     def input_load_fn(self, path):
-        audio, sr = sf.read(path)
+        audio, sr = read_audio(path)
         
         # Apply data augmentation if enabled and probability check passes
         if self.use_augmentation and random.random() < self.augmentation_prob:
