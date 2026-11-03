@@ -78,6 +78,13 @@ def main(root):
               f"position counts {'MATCH' if list(tot) == ref_tot else 'differ: ' + str(ref_tot)}")
         rows.append(dict(model=model, run=name, res=res_of(d), cutoff="own_eer", threshold=t,
                          group="all", eer=e, **rates((sc > t).astype(np.int8), yy)))
+        us = np.array([v.min() for v in score]); uy = np.array([int(v.min() == 1) for v in y], np.int8)
+        ue, ut = eer(us, uy) if 0 < uy.sum() < len(uy) else (float("nan"), float("nan"))
+        rows.append(dict(model=model, run=name, res=res_of(d), cutoff="own_eer", threshold=ut,
+                         group="recording", eer=ue, **rates((us > ut).astype(np.int8), uy)))
+        rows.append(dict(model=model, run=name, res=res_of(d), cutoff="argmax", threshold=0.0,
+                         group="recording", **rates((us > 0).astype(np.int8), uy)))
+        print(f"    recording-level EER {ue:.2f} ({int(uy.sum())} genuine / {int(len(uy) - uy.sum())} with spoof)")
 
     json.dump(thr, open(out / "thresholds.json", "w"), indent=2)
 
