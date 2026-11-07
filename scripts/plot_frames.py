@@ -8,7 +8,8 @@ Not tied to one analysis: rows are filtered and mapped to the chart by column na
     --hatch COL         second grouping as texture        --facet COL  one panel column per value
     --y COL [COL ...]   one panel row per metric (never two scales on one axis);
                         A|B = first non-empty of A, B (e.g. false_alarm|miss -> one error panel)
-    --order COL=V1,V2   fix category order (also fixes colours: colour follows the value)
+    --order COL=V1,V2   fix category order (unlisted values follow); colours follow the hue order,
+                        so a value keeps its colour when other values are filtered out
     --sub REGEX=REPL    rewrite tick/legend labels, e.g. '^pos:=' (repeatable)
     --values            print values on bars    --fmt "{:.2f}" value format    --ylabel TEXT    --title TEXT   --out FILE.pdf|png
 Nested JSON {a: {b: v}} is flattened to columns level0, level1, ..., value.
@@ -57,7 +58,7 @@ def keep(row, cond):
 def levels(rows, col, order):
     seen = list(dict.fromkeys(str(r[col]) for r in rows)) if col else [None]
     want = order.get(col)
-    return [v for v in want if v in seen] if want else seen
+    return [v for v in want if v in seen] + [v for v in seen if v not in want] if want else seen
 
 
 def num(v):
@@ -67,7 +68,7 @@ def num(v):
         return None
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("table")
     ap.add_argument("--where", action="append", default=[])
@@ -79,7 +80,7 @@ def main():
     ap.add_argument("--values", action="store_true"); ap.add_argument("--fmt", default="{:.1f}")
     ap.add_argument("--ylabel", default=None); ap.add_argument("--title", default=None)
     ap.add_argument("--out", required=True)
-    a = ap.parse_args()
+    a = ap.parse_args(argv)
 
     rows = [r for r in load(a.table) if all(keep(r, c) for c in a.where)]
     if not rows:
@@ -89,7 +90,8 @@ def main():
     label = lambda v: reduce(lambda t, s: re.sub(s[0], s[1], t), subs, str(v))
 
     xs, hues, hatches, facets = (levels(rows, c, order) for c in (a.x, a.hue, a.hatch, a.facet))
-    if len(hues) > len(PALETTE) or len(hatches) > len(HATCHES):
+    colour_key = order.get(a.hue, []) + [h for h in hues if h not in order.get(a.hue, [])]
+    if len(colour_key) > len(PALETTE) or len(hatches) > len(HATCHES):
         raise SystemExit("too many groups for distinct colours/textures; filter or use --facet")
     groups = list(product(hues, hatches))
     width = 0.8 / len(groups)
@@ -112,7 +114,7 @@ def main():
                     raise SystemExit(f"{len(vals)} rows for one bar ({metric}, x={x}, hue={hue}, hatch={hatch}, "
                                      f"facet={facet}); add a --where filter or another grouping")
                 pos = k - 0.4 + width * (g + 0.5)
-                ax.bar(pos, vals[0], width, color=PALETTE[hues.index(hue)] if hue else PALETTE[0],
+                ax.bar(pos, vals[0], width, color=PALETTE[colour_key.index(hue)] if hue else PALETTE[0],
                        hatch=HATCHES[hatches.index(hatch)] if hatch else None,
                        edgecolor=SURFACE, linewidth=1,
                        label=" / ".join(label(v) for v in (hue, hatch) if v is not None))
@@ -134,14 +136,17 @@ def main():
         for side in ("left", "bottom"):
             ax.spines[side].set_color(MUTED)
         ax.tick_params(colors=MUTED, labelcolor=INK)
+    fig.tight_layout()
+    r = fig.canvas.get_renderer()
+    top = max(ax.get_tightbbox(r).y1 for ax in axes.flat) / fig.bbox.height
     if len(groups) > 1:  # legend for >= 2 series; deduplicated handles
         h, l = axes[0][-1].get_legend_handles_labels()
         uniq = dict(zip(l, h))
-        fig.legend(uniq.values(), uniq.keys(), loc="upper center", ncol=min(len(uniq), 4), frameon=False,
-                   bbox_to_anchor=(0.5, 1.0), labelcolor=INK, fontsize=8)
+        leg = fig.legend(uniq.values(), uniq.keys(), loc="lower center", ncol=min(len(uniq), 4), frameon=False,
+                         bbox_to_anchor=(0.5, top), labelcolor=INK, fontsize=8)
+        top = leg.get_window_extent(r).y1 / fig.bbox.height
     if a.title:
-        fig.suptitle(a.title, color=INK, y=1.06)
-    fig.tight_layout(rect=(0, 0, 1, 0.92 if len(groups) > 1 else 1))
+        fig.suptitle(a.title, color=INK, y=top, va="bottom")
     fig.savefig(a.out, bbox_inches="tight", facecolor=SURFACE)
     print(f"wrote {a.out} ({len(rows)} rows, {len(xs)} x {len(groups)} groups, {len(a.y)}x{len(facets)} panels)")
 
