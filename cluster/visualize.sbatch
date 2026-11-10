@@ -14,26 +14,23 @@ set -euo pipefail
 
 REPO_ROOT="${SLURM_SUBMIT_DIR:-}"
 if [[ -z "${REPO_ROOT}" || ! -f "${REPO_ROOT}/src/train.py" ]]; then
-    echo "ERROR: Submit from the SAL repository root: sbatch cluster/visualize.sbatch [MODE] [SAMPLE_ID]" >&2
+    echo "ERROR: Submit from the SAL repository root: sbatch cluster/visualize.sbatch [localise] [SAMPLE_ID] [AUDIO_PATH]" >&2
     exit 1
 fi
 cd "${REPO_ROOT}"
 export PROJECT_ROOT="${PROJECT_ROOT:-${REPO_ROOT}}"
 
-# Check .env
 if [[ ! -f ".env" ]]; then
     echo "ERROR: Root '.env' file not found at ${REPO_ROOT}/.env!" >&2
     exit 1
 fi
 
-# Load the remote environment configuration
 set -a
 # shellcheck disable=SC1091
 source .env
 set +a
 export PROJECT_ROOT="${REPO_ROOT}"
 
-# Load Apptainer module
 module load apptainer
 if ! command -v apptainer &>/dev/null; then
     echo "ERROR: Apptainer is unavailable after loading its cluster module." >&2
@@ -46,30 +43,73 @@ if [[ ! -r "${SAL_IMAGE}" ]]; then
     exit 1
 fi
 
-# Ensure output directory exists
-OUT_DIR="${REPO_ROOT}/eval/visualize"
-mkdir -p "${OUT_DIR}"
-
-# Determine mode and sample ID from arguments
-# Usage: sbatch cluster/visualize.sbatch [gradcam|part_error|all|figure1|figure3] [SAMPLE_ID]
-MODE="${1:-gradcam}"
+MODE="${1:-localise}"
 SAMPLE_ID="${2:-CON_E_0000096}"
-case "$MODE" in gradcam|part_error|all|figure1|figure3) ;; *) echo "ERROR: Invalid mode: $MODE" >&2; exit 1;; esac
-
-# Historical S7 (<-- default )
-MODEL_CKPT="${MODEL_CKPT:-${SAL_LOG_DIR}/S7/run4/train/checkpoints/epoch_012-step_010322-eer_2.4693.ckpt}"
-if [[ "$MODE" != part_error && ! -r "$MODEL_CKPT" ]]; then
-    echo "ERROR: Model checkpoint not readable: $MODEL_CKPT" >&2
+if [[ "$MODE" != localise ]]; then
+    echo "ERROR: Invalid mode: $MODE (expected: localise)" >&2
     exit 1
 fi
 
-echo "============================================================"
-echo "SAL Visualization Job started on $(hostname) at $(date)"
-echo "Mode: ${MODE}"
-echo "Model Checkpoint: ${MODEL_CKPT}"
-echo "============================================================"
+SPLIT="${SPLIT:-eval}"
+RESOLUTION="${RESOLUTION:-0.16}"
+OUT_DIR="${REPO_ROOT}/eval/visualize/${SLURM_JOB_ID}"
+mkdir -p "${OUT_DIR}"
 
-run_in_sal() {
+# Frozen per-model thresholds on the logit[1]-logit[0] scale, taken from that model's own
+# PS-dev EER point (thresholds.json). Set THRESHOLD_S3 / THRESHOLD_S7 (THRESHOLD for MODEL_CKPT).
+# Missing -> job stops; ALLOW_ARGMAX_THRESHOLD=1 falls back to 0.5.
+threshold_args() {
+    local tag="$1" value="$2"
+    if [[ -n "$value" ]]; then
+        echo "Threshold (${tag}): logit-diff ${value} (frozen from ${tag}'s PS dev set)" >&2
+        printf '%s\n' --logit_threshold "$value"
+    elif [[ "${ALLOW_ARGMAX_THRESHOLD:-0}" == 1 ]]; then
+        echo "WARNING (${tag}): no frozen threshold set; falling back to P(real) 0.5 (argmax)." >&2
+        echo "WARNING (${tag}): 0.5 confounds calibration shift with localisation quality; do not use these plots for PS-vs-LPS claims." >&2
+        printf '%s\n' --threshold 0.5
+    else
+        echo "ERROR (${tag}): no frozen threshold. Set THRESHOLD_${tag} (or THRESHOLD for MODEL_CKPT)" >&2
+        echo "       to that model's PS-dev EER threshold from thresholds.json, or ALLOW_ARGMAX_THRESHOLD=1." >&2
+        exit 1
+    fi
+}
+
+# SAMPLE_LIST=<make_sample_list.py output> plots every listed utterance (audio from AUDIO_DIR);
+# otherwise one utterance (SAMPLE_ID / AUDIO_PATH).
+SAMPLE_LIST="${SAMPLE_LIST:-}"
+AUDIO_DIR="${AUDIO_DIR:-$PARTIALSPOOF_ROOT/$SPLIT/con_wav}"
+if [[ -n "$SAMPLE_LIST" ]]; then
+    [[ -r "$SAMPLE_LIST" ]] || { echo "ERROR: SAMPLE_LIST not readable: $SAMPLE_LIST" >&2; exit 1; }
+    if [[ $# -ge 3 ]]; then
+        echo "ERROR: AUDIO_PATH argument cannot be combined with SAMPLE_LIST (use AUDIO_DIR)" >&2
+        exit 1
+    fi
+    cp "$SAMPLE_LIST" "${OUT_DIR}/sample_list.tsv"
+fi
+
+AUDIO_PATH="${3:-$PARTIALSPOOF_ROOT/$SPLIT/con_wav/$SAMPLE_ID.wav}"
+LABEL_ARGS=()
+if [[ -n "${LABELS_PATH:-}" ]]; then
+    LABEL_ARGS=(--labels_path "$LABELS_PATH")
+elif [[ $# -lt 3 ]]; then
+    LABEL_ARGS=(--labels_path "$PARTIALSPOOF_ROOT/segment_labels/${SPLIT}_seglab_${RESOLUTION}.npy")
+fi
+
+run_localise() {
+    local tag="$1" ckpt="$2" model_type="$3" threshold="$4"
+    [[ -r "$ckpt" ]] || { echo "ERROR: Model checkpoint not readable: $ckpt" >&2; exit 1; }
+    local thr_args sample_args
+    mapfile -t thr_args < <(threshold_args "$tag" "$threshold")
+    # process substitution hides exit 1 from threshold_args, so check the result here
+    [[ ${#thr_args[@]} -eq 2 ]] || exit 1
+    if [[ -n "$SAMPLE_LIST" ]]; then
+        sample_args=(--sample_list "$SAMPLE_LIST" --audio_dir "$AUDIO_DIR"
+                     --output_path "$OUT_DIR/localisation_${tag}_{sample_id}.png")
+    else
+        sample_args=(--audio_path "$AUDIO_PATH" --sample_id "$SAMPLE_ID"
+                     --output_path "$OUT_DIR/localisation_${tag}_${SAMPLE_ID}.png")
+    fi
+    echo "Running localise (${tag}): ${ckpt} (${model_type})"
     srun apptainer exec \
         --nv \
         --cleanenv \
@@ -77,106 +117,24 @@ run_in_sal() {
         --env "PROJECT_ROOT=${PROJECT_ROOT}" \
         --env "MPLBACKEND=Agg" \
         "${SAL_IMAGE}" \
-        python -u "$@"
+        python -u scripts/visualize/gradcam.py --localisation \
+            "${sample_args[@]}" "${LABEL_ARGS[@]}" "${thr_args[@]}" \
+            --ckpt "$XLSR_CHECKPOINT" --model_ckpt "$ckpt" \
+            --model_type "$model_type" --ssl_encoder xlsr --ssl_mode s3prl_weighted \
+            --resolution "$RESOLUTION" --device cuda
 }
 
-if [[ "$MODE" == figure1 || "$MODE" == figure3 ]]; then
-    OUT_DIR="$OUT_DIR/${SLURM_JOB_ID}"
-    mkdir -p "$OUT_DIR"
-    git rev-parse HEAD > "$OUT_DIR/commit.txt"
-    for model in S3 S7; do
-        if [[ "$model" == S3 ]]; then
-            checkpoint="$SAL_LOG_DIR/S3/run1/train/checkpoints/epoch_010-step_008734-eer_2.6435.ckpt"
-            model_type=ssl_seq
-            model_config=seq/seq_cf_weighted
-        else
-            checkpoint="$SAL_LOG_DIR/S7/run4/train/checkpoints/epoch_012-step_010322-eer_2.4693.ckpt"
-            model_type=ssl_seq_8labels_2loss
-            model_config=sal/seq_cf_8labels_2loss
-        fi
-        [[ -r "$checkpoint" ]] || { echo "ERROR: Missing $checkpoint" >&2; exit 1; }
-        printf '%s %s\n' "$model" "$checkpoint" >> "$OUT_DIR/protocol.txt"
-        if [[ "$MODE" == figure1 ]]; then
-            run_in_sal scripts/visualize/gradcam.py \
-                --audio_path "$PARTIALSPOOF_ROOT/eval/con_wav/$SAMPLE_ID.wav" \
-                --labels_path "$PARTIALSPOOF_ROOT/segment_labels/eval_seglab_0.16.npy" \
-                --sample_id "$SAMPLE_ID" --ckpt "$XLSR_CHECKPOINT" \
-                --model_ckpt "$checkpoint" --model_type "$model_type" \
-                --ssl_mode s3prl_weighted --device cuda \
-                --output_path "$OUT_DIR/figure1_${model}_${SAMPLE_ID}.png"
-        else
-            # write next to the supplied checkpoint path
-            mkdir -p "$OUT_DIR/$model/checkpoints"
-            ln -s "$checkpoint" "$OUT_DIR/$model/checkpoints/model.ckpt"
-            run_in_sal src/eval.py "model=$model_config" data=partialspoof \
-                data.batch_size=1 data.num_workers=0 \
-                "ckpt_path=$OUT_DIR/$model/checkpoints/model.ckpt" \
-                "hydra.run.dir=$OUT_DIR/$model/hydra" +trainer.enable_progress_bar=false
-        fi
-    done
-    if [[ "$MODE" == figure3 ]]; then
-        run_in_sal scripts/visualize/part_error.py \
-            --file "$OUT_DIR/S3/result.txt" --compare "$OUT_DIR/S7/result.txt" \
-            --out "$OUT_DIR/figure3_distribution_errors.png"
-    fi
-    echo "Saved $MODE outputs to $OUT_DIR"
-    exit 0
+# Check all thresholds before the first GPU run (direct call, so exit 1 stops the job).
+if [[ -n "${MODEL_CKPT:-}" ]]; then
+    [[ -n "${THRESHOLD:-}" || "${ALLOW_ARGMAX_THRESHOLD:-0}" == 1 ]] || threshold_args "${MODEL_TAG:-custom}" ""
+else
+    [[ -n "${THRESHOLD_S3:-}" || "${ALLOW_ARGMAX_THRESHOLD:-0}" == 1 ]] || threshold_args S3 ""
+    [[ -n "${THRESHOLD_S7:-}" || "${ALLOW_ARGMAX_THRESHOLD:-0}" == 1 ]] || threshold_args S7 ""
 fi
 
-# ---------------------------------------------------------
-# Step 1a: Positional Error Rates (Start, Middle, End, Unit)
-# ---------------------------------------------------------
-if [[ "${MODE}" == "part_error" || "${MODE}" == "all" ]]; then
-    echo ""
-    echo "--- Step 1a: Generating Positional Error Rate Plot (part_error.py) ---"
-    : "${RESULT_FILE:?Set RESULT_FILE to verified positional statistics (indices 0..7), not S7 aggregate metrics}"
-
-    if [[ -n "${RESULT_FILE}" && -f "${RESULT_FILE}" ]]; then
-        echo "Found training result file: ${RESULT_FILE}"
-        run_in_sal scripts/visualize/part_error.py \
-            --file "${RESULT_FILE}" \
-            --out "${OUT_DIR}/positional_error_rates.png"
-        echo "Positional error plot saved to ${OUT_DIR}/positional_error_rates.png"
-    else
-        echo "ERROR: Result file not found: $RESULT_FILE" >&2
-        exit 1
-    fi
+if [[ -n "${MODEL_CKPT:-}" ]]; then
+    run_localise "${MODEL_TAG:-custom}" "$MODEL_CKPT" "${MODEL_TYPE:-ssl_seq_8labels_2loss}" "${THRESHOLD:-}"
+else
+    run_localise S3 "${SAL_LOG_DIR}/S3/run1/train/checkpoints/epoch_010-step_008734-eer_2.6435.ckpt" ssl_seq "${THRESHOLD_S3:-}"
+    run_localise S7 "${SAL_LOG_DIR}/S7/run4/train/checkpoints/epoch_012-step_010322-eer_2.4693.ckpt" ssl_seq_8labels_2loss "${THRESHOLD_S7:-}"
 fi
-
-# ---------------------------------------------------------
-# Step 1b & 2: Grad-CAM and Direct Prediction Timeline
-# ---------------------------------------------------------
-if [[ "${MODE}" == "gradcam" || "${MODE}" == "all" ]]; then
-    echo ""
-    echo "--- Step 1b / 2: Generating Grad-CAM and Prediction Timeline (gradcam.py) ---"
-    
-    # Keep audio and labels on the same split and never substitute another split.
-    SPLIT="${SPLIT:-eval}"
-    case "$SPLIT" in eval|dev) ;; *) echo "ERROR: Invalid split: $SPLIT" >&2; exit 1;; esac
-    LABELS_PATH="${PARTIALSPOOF_ROOT}/segment_labels/${SPLIT}_seglab_0.16.npy"
-    AUDIO_PATH="${PARTIALSPOOF_ROOT}/${SPLIT}/con_wav/${SAMPLE_ID}.wav"
-    for file in "$LABELS_PATH" "$AUDIO_PATH" "$XLSR_CHECKPOINT"; do
-        [[ -r "$file" ]] || { echo "ERROR: File not readable: $file" >&2; exit 1; }
-    done
-
-    echo "Audio: ${AUDIO_PATH}"
-    echo "Labels: ${LABELS_PATH}"
-    echo "Sample: ${SAMPLE_ID}"
-    echo "SSL Encoder: ${XLSR_CHECKPOINT}"
-
-    run_in_sal scripts/visualize/gradcam.py \
-        --audio_path "${AUDIO_PATH}" \
-        --labels_path "${LABELS_PATH}" \
-        --sample_id "${SAMPLE_ID}" \
-        --ckpt "${XLSR_CHECKPOINT}" \
-        --model_ckpt "${MODEL_CKPT}" \
-        --model_type ssl_seq_8labels_2loss \
-        --ssl_mode s3prl_weighted \
-        --device cuda \
-        --output_path "${OUT_DIR}/gradcam_${SAMPLE_ID}.png"
-
-    echo "Grad-CAM & timeline plot saved to: ${OUT_DIR}/gradcam_${SAMPLE_ID}.png"
-fi
-
-echo ""
-echo "=== SAL Visualization Completed successfully at $(date) ==="

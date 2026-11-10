@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Tuple, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 import hydra
+import torch
 import lightning as L
 import rootutils
 from lightning import Callback, LightningDataModule, LightningModule, Trainer
@@ -46,6 +47,9 @@ def train(cfg: DictConfig) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     :param cfg: A DictConfig configuration composed by Hydra.
     :return: A tuple with metrics and dict with all instantiated objects.
     """
+    # "highest" = PyTorch default (FP32 matmul); "high" enables TF32 tensor cores on A100
+    torch.set_float32_matmul_precision(cfg.get("matmul_precision", "highest"))
+
     # set seed for random number generators in pytorch, numpy and python.random
     if cfg.get("seed"):
         L.seed_everything(cfg.seed, workers=True)

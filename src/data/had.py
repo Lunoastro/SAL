@@ -28,6 +28,7 @@ class HADDataModule(LightningDataModule):
             use_augmentation=False,
             augmentation_algo=4,
             augmentation_prob=0.5,
+            augment_eval=True,  # upstream behaviour; False = RawBoost on train split only (as in the paper)
     ) -> None:
         super().__init__()
         self.root = root
@@ -43,6 +44,7 @@ class HADDataModule(LightningDataModule):
         self.use_augmentation = use_augmentation
         self.augmentation_algo = augmentation_algo
         self.augmentation_prob = augmentation_prob
+        self.augment_eval = augment_eval
 
     def setup(self, stage=None):
         if stage == 'fit' or stage is None:
@@ -91,7 +93,7 @@ class HADDataModule(LightningDataModule):
             pad_mode=pad_mode,
             add_label=self.add_label,
             # Data augmentation parameters
-            use_augmentation=self.use_augmentation,
+            use_augmentation=self.use_augmentation and (self.augment_eval or split == 'train'),
             augmentation_algo=self.augmentation_algo,
             augmentation_prob=self.augmentation_prob,
         )

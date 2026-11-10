@@ -12,12 +12,13 @@
 
 set -euo pipefail
 
-[[ $# -eq 2 ]] || { echo "Usage: sbatch cluster/eval_lps.sbatch RUN PART" >&2; exit 2; }
+[[ $# -eq 2 ]] || { echo "Usage: sbatch cluster/eval_lps.sbatch RUN PART  (PART: cf|cp|oa = LPS, dev|eval = PartialSpoof)" >&2; exit 2; }
 run="$1"
 part="$2"
 case "$part" in
-    cf|cp|oa) ;;
-    *) echo "Part must be cf, cp, or oa" >&2; exit 2 ;;
+    cf|cp|oa) config=eval_lps; data_arg="data.part=$part" ;;
+    dev|eval|*_genuine|*_spoof) config=eval; data_arg="+data.test_split=$part" ;;  # PartialSpoof (+ split-audio copies)
+    *) echo "Part must be cf, cp, oa (LPS) or dev, eval (PartialSpoof)" >&2; exit 2 ;;
 esac
 
 case "$run" in
@@ -37,6 +38,8 @@ case "$run" in
         file="epoch_013-step_011116-eer_2.4567.ckpt" ;;
     S7) run_dir="S7/run4"; model="sal/seq_cf_8labels_2loss"
         file="epoch_012-step_010322-eer_2.4693.ckpt" ;;
+    S7_fixed) run_dir="S7_fixed/run1"; model="sal/seq_cf_8labels_2loss"  # corrected CSM; csm_fix is training-only
+        file="epoch_022-step_018262-eer_0.9787.ckpt" ;;
     S8) run_dir="S8/run1"; model="sal/seq_cf_8labels_2loss"
         file="epoch_010-step_008734-eer_2.4932.ckpt" ;;
     WavLM) run_dir="wavlm-cf/run4"; model="sal/wavlm_cf"
@@ -53,25 +56,29 @@ cd "$repo"
 
 base="${SAL_LOG_DIR:?Export SAL_LOG_DIR before submitting this job}"
 checkpoint="$base/$run_dir/train/checkpoints/$file"
-output_dir="$base/$run_dir/eval_lps/$part"
+output_dir="${EVAL_OUTPUT_DIR:-$base/$run_dir/eval_lps/$part}"
 [[ -r "$checkpoint" ]] || { echo "Checkpoint missing for $run" >&2; exit 1; }
 
 module load apptainer
+ps_env=()  # PS_ROOT=<dir> evaluates PartialSpoof-format data from another root (split-audio copies)
+[[ -n "${PS_ROOT:-}" ]] && ps_env=(--env "PARTIALSPOOF_ROOT=$PS_ROOT")
 # Reserve atomically
 mkdir -p "$(dirname "$output_dir")"
 mkdir "$output_dir" || { echo "Cannot create evaluation directory; check for an earlier run" >&2; exit 1; }
 mkdir "$output_dir/checkpoints"
 ln -s "$checkpoint" "$output_dir/checkpoints/$file"
 
-echo "Evaluating $run on LlamaPartialSpoof $part"
+echo "Evaluating $run on $part (config $config, resolution ${EVAL_RESOLUTION:-0.02})"
 srun apptainer exec \
     --nv --cleanenv --pwd "$repo" \
-    --env "PROJECT_ROOT=$repo" \
+    --env "PROJECT_ROOT=$repo" "${ps_env[@]}" \
     --env "SAL_EVAL_CHECKPOINT=$output_dir/checkpoints/$file" \
     "$repo/cluster/sal.sif" \
-    python -u src/eval.py --config-name eval_lps \
+    python -u src/eval.py --config-name "$config" \
     "model=$model" \
-    "data.part=$part" \
+    "$data_arg" \
     "data.num_workers=0" \
+    "data.resolution_test=${EVAL_RESOLUTION:-0.02}" \
+    "model.net.resolution_test=${EVAL_RESOLUTION:-0.02}" \
     "hydra.run.dir=$output_dir" \
     "+trainer.enable_progress_bar=false"

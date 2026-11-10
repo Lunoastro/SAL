@@ -1,4 +1,5 @@
 import os
+import pickle
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -24,6 +25,7 @@ class SALTrainer(LightningModule):
             mixup: bool = False,
             mixup2: bool = False,
             mixup_ratio: float = 0.5,
+            csm_fix: bool = False,
             compile: bool = False,
             vis: bool = False,
             vis_top_k_hard: int = 10,
@@ -45,6 +47,7 @@ class SALTrainer(LightningModule):
         self.mixup = mixup
         self.mixup2 = mixup2
         self.mixup_ratio = mixup_ratio
+        self.csm_fix = csm_fix
         self.vis = vis
         self.vis_top_k_hard = vis_top_k_hard
         self.vis_top_k_easy = vis_top_k_easy
@@ -79,6 +82,8 @@ class SALTrainer(LightningModule):
         :param batch: A batch of data containing (utt_ids, inputs, labels, label_lengths)
         :return: The batch with mixup applied to selected samples
         """
+        if self.csm_fix:
+            return self._csm_batch(batch)
         utt_ids, inputs, labels, label_lengths = batch
         batch_size = inputs.size(0)
         
@@ -209,6 +214,33 @@ class SALTrainer(LightningModule):
             final_label_lengths[original_indices] = label_lengths[original_indices]
         
         return utt_ids, final_inputs, final_labels, final_label_lengths
+
+    def _csm_batch(
+            self,
+            batch: Tuple[list, torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> Tuple[list, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Upstream `_mixup_batch` splices each selected sample with itself
+        and cuts audio and labels at independent points. Here each selected
+        sample A is spliced with a different sample B at one shared cut k,
+        drawn from Uniform{1..T-1} on the label grid (T = shorter valid length).
+        """
+        utt_ids, inputs, labels, label_lengths = batch
+        idx = torch.randperm(inputs.size(0))[:int(inputs.size(0) * self.mixup_ratio)]
+        if len(idx) < 2:
+            return batch
+        scale = inputs.size(1) // labels.size(1)  # samples per label frame
+        valid = label_lengths.clamp(max=labels.size(1))
+        new_inputs, new_labels, new_lengths = inputs.clone(), labels.clone(), label_lengths.clone()
+        for a, b in zip(idx.tolist(), idx.roll(1).tolist()):  # roll(1) of distinct indices: b != a
+            t = int(min(valid[a], valid[b]))
+            if t < 2:
+                continue
+            k = int(torch.randint(1, t, (1,)))
+            new_inputs[a, k * scale:] = inputs[b, k * scale:]
+            new_labels[a, k:] = labels[b, k:]
+            new_lengths[a] = valid[b]
+        return utt_ids, new_inputs, new_labels, new_lengths
 
     def _get_label_mask(
             self,
@@ -397,11 +429,13 @@ class SALTrainer(LightningModule):
 
     def on_test_start(self) -> None:
         """Lightning hook that is called when testing begins."""
+        # Single-device evaluation, matching cluster/eval_lps.sbatch.
+        self._position_total = np.zeros(8, dtype=np.int64)
+        self._position_wrong = np.zeros(8, dtype=np.int64)
+        self._frames = []  # (utt_id, logits[T,2], labels[T])
         self.test_loss.reset()
         self.test_eer.reset()
         self.test_acc.reset()
-        self._position_total = np.zeros(8, dtype=np.int64)
-        self._position_wrong = np.zeros(8, dtype=np.int64)
         if self.vis:
             self._vis_items = []
 
@@ -448,11 +482,13 @@ class SALTrainer(LightningModule):
         
         self.test_eer.update(preds_flat[:, 1] - preds_flat[:, 0], labels_flat)
         self.test_acc.update(preds_flat, labels_flat)
-        #using the already-masked positional labels and binary predictions.
         positions = labels_flat8.detach().cpu().numpy().astype(int)
         wrong = (preds_flat.argmax(dim=1) != labels_flat).detach().cpu().numpy()
         self._position_total += np.bincount(positions, minlength=8)
         self._position_wrong += np.bincount(positions[wrong], minlength=8)
+        for i, L in enumerate(label_lengths.tolist()):
+            self._frames.append((utt_ids[i], preds2[i, :L].float().cpu().numpy(),
+                                 labels[i, :L].cpu().numpy().astype(np.int8)))
         self.log("test/loss", self.test_loss, on_step=False,
                  on_epoch=True, prog_bar=True)
 
@@ -477,10 +513,13 @@ class SALTrainer(LightningModule):
         self.log("test/f1", f1, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
         result_file = os.path.join(self.exp_dir, "result.txt")
         with open(result_file, "a") as f:
-            f.write(f"EER={eer:.4f} ACC={acc:.4f} F1={f1:.4f}\n")
+            f.write(f"EER={eer:.4f} ACC={acc:.4f} F1={f1:.4f} Thresh={thresh_eer:.4f}\n")
             for i, total in enumerate(self._position_total):
                 accuracy = 100 * (1 - self._position_wrong[i] / total) if total else 0.0
                 f.write(f"{i}: acc: {accuracy:.4f}, total_samples: {float(total):.4f},\n")
+        # per-frame logits for offline analysis (thresholds, rescoring, subsets)
+        with open(os.path.join(self.exp_dir, "frame_scores.pkl"), "wb") as f:
+            pickle.dump(self._frames, f)
 
         if self.vis and hasattr(self, "_vis_items") and len(self._vis_items) > 0:
             vis_dir = os.path.join(self.exp_dir, "vis")

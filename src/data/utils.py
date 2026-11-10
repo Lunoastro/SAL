@@ -22,3 +22,16 @@ def find_files(root_dir, query="*.wav", include_root_dir=True):
         files = [file_.replace(root_dir + "/", "") for file_ in files]
 
     return files
+
+
+def read_audio(path, tries=5, wait=10):
+    import time
+    import soundfile as sf
+    for i in range(tries):
+        try:
+            return sf.read(path)
+        except sf.LibsndfileError:
+            if i == tries - 1:
+                raise
+            print(f"read failed ({i + 1}/{tries}), retrying in {wait}s: {path}", flush=True)
+            time.sleep(wait)

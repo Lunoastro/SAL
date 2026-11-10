@@ -9,6 +9,7 @@ from lightning import LightningDataModule
 from torch.utils.data import DataLoader
 
 from src.data.base_dataset import BaseDataset
+from src.data.utils import read_audio
 from src.data.RawBoost import process_Rawboost_feat
 
 
@@ -29,6 +30,8 @@ class PartialSpoofDataModule(LightningDataModule):
             use_augmentation=False,
             augmentation_algo=4,
             augmentation_prob=0.5,
+            test_split='eval',  # 'dev' to pick thresholds on PS dev
+            augment_eval=True,  # upstream behaviour; False = RawBoost on train split only (as in the paper)
 
     ) -> None:
         super().__init__()
@@ -46,6 +49,8 @@ class PartialSpoofDataModule(LightningDataModule):
         self.use_augmentation = use_augmentation
         self.augmentation_algo = augmentation_algo
         self.augmentation_prob = augmentation_prob
+        self.augment_eval = augment_eval
+        self.test_split = test_split
 
     def setup(self, stage=None):
         if stage == 'fit' or stage is None:
@@ -62,7 +67,7 @@ class PartialSpoofDataModule(LightningDataModule):
 
         if stage == 'test' or stage is None:
             self.test_dataset = self.get_dataset(
-                split='eval',
+                split=self.test_split,
                 resolution=self.resolution_test,
                 pad_mode='test'
             )
@@ -96,7 +101,7 @@ class PartialSpoofDataModule(LightningDataModule):
             debug_mode=self.debug_mode,
             max_samples=self.max_samples,
             # Data augmentation parameters
-            use_augmentation=self.use_augmentation,
+            use_augmentation=self.use_augmentation and (self.augment_eval or split == 'train'),
             augmentation_algo=self.augmentation_algo,
             augmentation_prob=self.augmentation_prob,
         )
@@ -113,7 +118,7 @@ class PartialSpoofDataset(BaseDataset):
         super().__init__(*args, **kwargs)
 
     def input_load_fn(self, path):
-        audio, sr = sf.read(path)
+        audio, sr = read_audio(path)
         
         # Apply data augmentation if enabled and probability check passes
         if self.use_augmentation and random.random() < self.augmentation_prob:
