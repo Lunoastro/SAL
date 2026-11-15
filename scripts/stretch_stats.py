@@ -8,7 +8,10 @@ Per file it prints
     split into "edge" (first / last frame of the recording) and "splice" (next to a label change,
     i.e. a splice up to the 20 ms grid). Counts match frame_analysis.py's start/end categories;
   - recording-level detection (score = most spoof-like frame; same EER as frame_analysis.py) with all
-    frames vs. ignoring the first and last --trim frames of each recording (default 1 = 20 ms).
+    frames vs. ignoring the first and last --trim frames of each recording (default 1 = 20 ms)
+  - the error rate by stretch length (bins of EDGES seconds), for all frames of the stretch and for its
+    middle frames only. A stretch that spans its whole recording is listed separately, because it has
+    no other-class audio around it.
 
     python scripts/stretch_stats.py OUT/S3/eval-0.02/frame_scores.pkl ... [--frame 0.02] [--trim 1]
 """
@@ -22,6 +25,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from frame_analysis import eer  
 
 CLS = {0: "spoof", 1: "genuine"}
+EDGES = (0.02, 0.1, 0.5, 1.0, 2.0)  # upper bounds (s) of the stretch-length bins
+BINS = [f"<= {u:g} s" for u in EDGES] + [f">  {EDGES[-1]:g} s", "whole recording"]
 
 
 def stretches(y):
@@ -36,13 +41,15 @@ def main():
     a = ap.parse_args()
     for path in a.pkl:
         lengths, unit_place, err = defaultdict(list), defaultdict(int), defaultdict(lambda: [0, 0])
-        rec = []
+        rec, bylen = [], defaultdict(lambda: np.zeros(5, int))  # stretches, frames, wrong, middle frames, wrong
         for _, logits, y in pickle.load(open(path, "rb")):
             y = np.asarray(y).astype(int); sc = logits[:, 1] - logits[:, 0]; wrong = (sc > 0).astype(int) != y
             inner = sc[a.trim:len(sc) - a.trim] if len(sc) > 2 * a.trim else sc  # too short: keep all
             rec.append((int(y.min() == 1), sc.min(), inner.min()))
             for s, e in stretches(y):
                 c = CLS[y[s]]; lengths[c].append(e - s); edge_s, edge_e = s == 0, e == len(y)
+                b = BINS[-1] if edge_s and edge_e else BINS[int(np.searchsorted(EDGES, (e - s) * a.frame - 1e-9))]
+                bylen[c, b] += (1, e - s, wrong[s:e].sum(), max(e - s - 2, 0), wrong[s + 1:e - 1].sum())
                 if e - s == 1:
                     unit_place[c, "edge" if edge_s or edge_e else "between other class"] += 1
                     continue
@@ -58,6 +65,13 @@ def main():
                   f"single-frame {100 * (n == 1).mean():.1f}% {units}")
         for (c, side, place), (k, w) in sorted(err.items()):
             print(f"  {c:7} {side:5} {place:6}: {k:7d} frames, {100 * w / k:5.1f}% misclassified")
+        for c in ("spoof", "genuine"):
+            for b in BINS:
+                if (c, b) in bylen:
+                    n, f, w, mf, mw = bylen[c, b]
+                    mid = f"{100 * mw / mf:5.1f}%" if mf else "    - "
+                    print(f"  {c:7} stretches {b:15}: {n:7d} stretches, {f:9d} frames, {100 * w / f:5.1f}% misclassified "
+                          f"(middle frames only: {mid})")
         g, full, trim = (np.array(v) for v in zip(*rec))
         for name, s in (("all frames", full), (f"without {a.trim} edge frame(s)", trim)):
             e = eer(s, g)[0] if 0 < g.sum() < len(g) else float("nan")
