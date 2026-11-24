@@ -23,11 +23,11 @@ NAMES = {PS: "PartialSpoof eval\n(20 ms)", PS_COARSE: "PartialSpoof eval\n(160 m
          SPLIT[0]: "genuine stretch\nin its recording", SPLIT[1]: "genuine stretch\nisolated",
          SPLIT[2]: "spoofed stretch\nin its recording", SPLIT[3]: "spoofed stretch\nisolated"}
 # ---- labels for values written by frame_analysis.py (no need to change) ---------------------
-FIXED = {"argmax": "argmax rule: spoof if P(spoof) > 0.5", "frozen_ps_dev": "threshold fixed once on PartialSpoof dev",
-         "false_alarm": "False alarms: genuine frames classified as spoof",
-         "miss": "Misses: spoofed frames classified as genuine", "false_alarm|miss": "% of frames misclassified",
+FIXED = {"argmax": "Argmax", "frozen_ps_dev": "Frozen PS dev",
+         "false_alarm": "False alarms (genuine -> spoof)",
+         "miss": "Misses (spoofed -> genuine)", "false_alarm|miss": "% of frames misclassified",
          "eer": "Equal error rate (best threshold per test set)", "subset:other": "fully genuine"}
-REGEX = ["^pos:=", "^(spoof|genuine)_=\\1\n", "^subset:=", "/full$=\nfully spoofed", "/partial$=\npartially spoofed"]
+REGEX = ["^pos:=", "^(spoof|genuine)_=\\1\n", "^subset:=", "/full$=\nfull", "/partial$=\npartial"]
 
 
 def main():
@@ -47,15 +47,17 @@ def main():
         "fig1_decision_rules": ["--where", "group=all", "--where", "cutoff=argmax,frozen_ps_dev",
             "--where", "run=" + one([PS] + LPS), "--x", "run", "--hue", "model", "--facet", "cutoff",
             "--y", "false_alarm", "miss", "--order", "cutoff=argmax,frozen_ps_dev", "--ylabel", "% of frames",
-            "--values", "--title", "Frame errors at two decision rules (20 ms frames)"],
+            "--values", "--figsize", "8.6,4.8", "--sub", "^LPS =LPS\n",
+            "--title", "Frame errors at two decision rules (20 ms frames)"],
         "fig2_eer": ["--where", "group=all", "--where", "cutoff=own_eer", "--where", "run=" + one([PS, PS_COARSE] + LPS),
             "--x", "run", "--hue", "model", "--y", "eer", "--ylabel", "EER (%)", "--values", "--title", "Frame-level EER"],
         "fig3_positions": ["--where", "cutoff=argmax", "--where", "run=" + one([PS, LPS_MAIN]),
             "--where", "group~^pos:(?!.*unit)", "--x", "group", "--hue", "model", "--facet", "run",
-            "--y", "false_alarm|miss", "--ylabel", "% of frames", "--values", "--title",
-            "Errors by position: first / inner / last frame of each spoofed or genuine stretch (argmax rule)"],
+            "--y", "false_alarm|miss", "--ylabel", "% of frames", "--values", "--stack-facets", "--figsize", "6.4,4.5",
+            "--title", "Errors by position: first / inner / last frame of each stretch (argmax rule)"],
         "fig4_generators": ["--where", "cutoff=argmax", "--where", "run=" + LPS_MAIN, "--where", "group~^subset:",
-            "--x", "group", "--hue", "model", "--y", "false_alarm", "miss", "--ylabel", "% of frames",
+            "--x", "group", "--hue", "model", "--y", "false_alarm", "miss", "--order", "group=subset:other",
+            "--ylabel", "% of frames", "--drop-empty", "--figsize", "7.2,5.4",
             "--title", f"{NAMES.get(LPS_MAIN, LPS_MAIN)} by generator and recording type (argmax rule)"],
         "fig5_split_test": ["--where", "model=" + one(with_split), "--where", "cutoff=argmax", "--where", "group=all",
             "--where", "run=" + one(SPLIT), "--x", "run", "--hue", "model",
@@ -68,7 +70,7 @@ def main():
     failed = []
     for name, args in figs.items():
         try:
-            plot_frames.main([table, *args, *common, "--out", str(out / f"{name}.{a.ext}")])
+            plot_frames.main([table, *common, *args, "--out", str(out / f"{name}.{a.ext}")])
         except SystemExit as e:
             if str(e).startswith("no rows left"):  # a run or model was not evaluated
                 print(f"skipped {name}: {e}")

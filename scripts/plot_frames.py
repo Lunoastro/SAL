@@ -12,6 +12,7 @@ Not tied to one analysis: rows are filtered and mapped to the chart by column na
                         so a value keeps its colour when other values are filtered out
     --sub REGEX=REPL    rewrite tick/legend labels, e.g. '^pos:=' (repeatable)
     --values            print values on bars    --fmt "{:.2f}" value format    --ylabel TEXT    --title TEXT   --out FILE.pdf|png
+    --figsize W,H       figure size in inches   --stack-facets   stack facets as rows    --drop-empty   hide empty x ticks per panel
 Nested JSON {a: {b: v}} is flattened to columns level0, level1, ..., value.
 Missing or empty cells are skipped (no bar).
 
@@ -79,6 +80,9 @@ def main(argv=None):
     ap.add_argument("--sub", action="append", default=[])
     ap.add_argument("--values", action="store_true"); ap.add_argument("--fmt", default="{:.1f}")
     ap.add_argument("--ylabel", default=None); ap.add_argument("--title", default=None)
+    ap.add_argument("--figsize", default=None)
+    ap.add_argument("--stack-facets", action="store_true")
+    ap.add_argument("--drop-empty", action="store_true")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
 
@@ -96,17 +100,23 @@ def main(argv=None):
     groups = list(product(hues, hatches))
     width = 0.8 / len(groups)
 
-    fig, axes = plt.subplots(len(a.y), len(facets), squeeze=False, sharey="row",
-                             figsize=(max(4.5, 0.5 * len(xs) * len(groups) * len(facets) + 2), 2.8 * len(a.y)))
+    nrows, ncols = (len(facets), len(a.y)) if a.stack_facets else (len(a.y), len(facets))
+    figsize = tuple(float(v) for v in a.figsize.split(",")) if a.figsize else (
+        max(4.5, 0.5 * len(xs) * len(groups) * ncols + 2), 2.8 * nrows)
+    fig, axes = plt.subplots(nrows, ncols, squeeze=False, sharey="col" if a.stack_facets else "row",
+                             figsize=figsize)
     fig.patch.set_facecolor(SURFACE)
     for (i, metric), (j, facet) in product(enumerate(a.y), enumerate(facets)):
-        ax = axes[i][j]
+        row, col = (j, i) if a.stack_facets else (i, j)
+        ax = axes[row][col]
+        val_of = lambda r: next((num(r.get(m)) for m in metric.split("|") if num(r.get(m)) is not None), None)
+        panel_rows = [r for r in rows if facet is None or str(r[a.facet]) == facet]
+        panel_xs = [x for x in xs if any(str(r[a.x]) == x and val_of(r) is not None for r in panel_rows)] if a.drop_empty else xs
         for g, (hue, hatch) in enumerate(groups):
-            for k, x in enumerate(xs):
-                vals = [next((num(r.get(m)) for m in metric.split("|") if num(r.get(m)) is not None), None) for r in rows
+            for k, x in enumerate(panel_xs):
+                vals = [val_of(r) for r in panel_rows
                         if str(r[a.x]) == x and (hue is None or str(r[a.hue]) == hue)
-                        and (hatch is None or str(r[a.hatch]) == hatch)
-                        and (facet is None or str(r[a.facet]) == facet)]
+                        and (hatch is None or str(r[a.hatch]) == hatch)]
                 vals = [v for v in vals if v is not None]
                 if not vals:
                     continue
@@ -123,10 +133,15 @@ def main(argv=None):
                     ax.annotate(a.fmt.format(vals[0]), (pos, vals[0]), xytext=(0, 2 if up else -2),
                                 textcoords="offset points", ha="center", va="bottom" if up else "top",
                                 fontsize=7, color=INK)
-        ax.set_xticks(range(len(xs)), [label(x) for x in xs], rotation=30 if len(xs) > 4 else 0,
-                      ha="right" if len(xs) > 4 else "center", rotation_mode="anchor", color=INK, fontsize=8)
-        ax.set_title(" · ".join(t for t in (label(facet) if facet else "", label(metric)) if t), color=INK, fontsize=10)
-        if j == 0:
+        if a.values:
+            ax.margins(y=0.14)
+        rot = 30 if len(panel_xs) > 4 and not (a.stack_facets and len(panel_xs) <= 6) else 0
+        hide_x = a.stack_facets and not a.drop_empty and row < nrows - 1
+        ax.set_xticks(range(len(panel_xs)), [] if hide_x else [label(x) for x in panel_xs], rotation=rot,
+                      ha="right" if rot else "center", rotation_mode="anchor", color=INK, fontsize=8)
+        ax.set_title(" · ".join(t for t in (label(facet) if facet else "", label(metric)) if t).replace("\n", " "),
+                     color=INK, fontsize=10)
+        if col == 0:
             ax.set_ylabel(a.ylabel or "", color=INK)
         ax.set_facecolor(SURFACE)
         ax.grid(axis="y", color=MUTED, alpha=0.25, linewidth=0.6)
@@ -143,12 +158,12 @@ def main(argv=None):
         h, l = axes[0][-1].get_legend_handles_labels()
         uniq = dict(zip(l, h))
         leg = fig.legend(uniq.values(), uniq.keys(), loc="lower center", ncol=min(len(uniq), 4), frameon=False,
-                         bbox_to_anchor=(0.5, top), labelcolor=INK, fontsize=8)
+                         bbox_to_anchor=(0.5, top), labelcolor=INK, fontsize=10)
         top = leg.get_window_extent(r).y1 / fig.bbox.height
     if a.title:
         fig.suptitle(a.title, color=INK, y=top, va="bottom")
     fig.savefig(a.out, bbox_inches="tight", facecolor=SURFACE)
-    print(f"wrote {a.out} ({len(rows)} rows, {len(xs)} x {len(groups)} groups, {len(a.y)}x{len(facets)} panels)")
+    print(f"wrote {a.out} ({len(rows)} rows, {len(xs)} x {len(groups)} groups, {nrows}x{ncols} panels)")
 
 
 if __name__ == "__main__":
